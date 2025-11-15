@@ -107,6 +107,7 @@ def gen_gl_header(parsed: ParsedGladGL) -> str:
 // It contains the OpenGL parts of `glad/gl.h` and added OpenGL function declarations.
 {parsed.glad_source_comment}
 #ifndef __gl_h_
+#define __gl_h_
 #define GLAD_API_PTR
 {parsed.glad_gl_only}{function_decls}
 #endif

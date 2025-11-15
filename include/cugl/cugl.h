@@ -1,7 +1,7 @@
 #ifndef CUGL_H
 #define CUGL_H
 
-#include "vulkan/vulkan.h"
+#include "vulkan/vulkan_core.h"
 
 typedef VkResult (*SurfaceCreateCallback)(VkInstance, const VkAllocationCallbacks *, VkSurfaceKHR *, void *);
 
@@ -48,6 +48,7 @@ void cuglSwapBuffers(void);
  */
 
 #ifndef __gl_h_
+#define __gl_h_
 #define GLAD_API_PTR
 
 #define GL_ACTIVE_ATOMIC_COUNTER_BUFFERS 0x92D9

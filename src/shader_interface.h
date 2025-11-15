@@ -3,6 +3,10 @@
 
 #include "stdint.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum shader_type {
     shader_VERTEX,
     shader_FRAGMENT,
@@ -21,15 +25,11 @@ typedef enum glslang_error_type {
     glslang_error_EXCEPTION,
 } glslang_error_type;
 
-struct glslang_program_empty {};
-struct glslang_shader_empty {};
+struct glslang_program_empty { char X; };
+struct glslang_shader_empty { char X; };
 
 typedef struct glslang_shader_empty *glslang_shader;
 typedef struct glslang_program_empty *glslang_program;
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 int GlslangShaderCreateAndParse(shader_type Type, const char *SourceBytes, uint64_t SourceByteCount, glslang_shader *OutShader);
 int GlslangShaderGetLog(glslang_shader Shader, uint64_t *OutLength, const char **OutString);

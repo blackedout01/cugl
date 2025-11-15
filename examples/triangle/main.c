@@ -1,6 +1,6 @@
-#include "vulkan/vulkan.h"
-#include "GLFW/glfw3.h"
+//#include "vulkan/vulkan.h"
 #include "cugl/cugl.h"
+#include "GLFW/glfw3.h"
 
 #include "stdio.h"
 #include "stdlib.h"
@@ -8,8 +8,6 @@
 void MessageCallbackGL(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *message, const void *userParam) {
     printf("%s\n", message);
 }
-
-void fakeGladLoadGL();
 
 const char SourceV[] =
 "#version 460\n"
@@ -118,7 +116,6 @@ int main() {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow *Window = glfwCreateWindow(1600, 900, "vulkangl", 0, 0);
 
-    fakeGladLoadGL();
     glDebugMessageCallback(MessageCallbackGL, 0);
 
     context_create_params Params = {
