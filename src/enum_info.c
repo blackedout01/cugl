@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "vulkan/vulkan_core.h"
 
 int GetBufferTargetInfo(GLenum Target, buffer_target_info *OutInfo) {
 #define MakeCase(T, ...) case (T): { buffer_target_info I = { __VA_ARGS__ }; *OutInfo = I; }; return 0;
@@ -97,6 +98,41 @@ int GetVulkanBlendFactor(GLenum factor, VkBlendFactor *OutBlendFactor) {
         return 1;
     }
 #undef MakeCase
+}
+
+int GetVertexInputAttributeSizeTypeInfo(GLint Size, GLenum Type, vertex_input_attribute_size_type_info *OutInfo) {
+#define MakeSizeCase(Count, Format) case (Count): OutInfo->VulkanFormat = (Format); break
+#define MakeDefaultCase default: OutInfo->VulkanFormat = VK_FORMAT_UNDEFINED; break
+
+#define MakeCase(GlType, BitCount, VulkanType)\
+    case GlType:\
+        switch(Size) {\
+        MakeSizeCase(1, VK_FORMAT_R ## BitCount ## _ ## VulkanType);\
+        MakeSizeCase(2, VK_FORMAT_R ## BitCount ## G ## BitCount ## _ ## VulkanType);\
+        MakeSizeCase(3, VK_FORMAT_R ## BitCount ## G ## BitCount ## B ## BitCount ## _ ## VulkanType);\
+        MakeSizeCase(4, VK_FORMAT_R ## BitCount ## G ## BitCount ## B ## BitCount ## A ## BitCount ## _ ## VulkanType);\
+        MakeDefaultCase;\
+        }\
+        OutInfo->ByteCount = Size*BitCount/8;\
+        break
+        
+    switch(Type) {
+    MakeCase(GL_BYTE, 8, SINT);
+    MakeCase(GL_UNSIGNED_BYTE, 8, UINT);
+    MakeCase(GL_SHORT, 16, SINT);
+    MakeCase(GL_UNSIGNED_SHORT, 16, UINT);
+    MakeCase(GL_INT, 32, SINT);
+    MakeCase(GL_UNSIGNED_INT, 32, UINT);
+    MakeCase(GL_HALF_FLOAT, 16, SFLOAT);
+    MakeCase(GL_FLOAT, 32, SFLOAT);
+    MakeDefaultCase;
+    }
+#undef MakeCase
+
+#undef MakeDefaultCase
+#undef MakeSizeCase
+
+    return OutInfo->VulkanFormat == VK_FORMAT_UNDEFINED;
 }
 
 int GetShaderTypeInfo(GLenum type, shader_type_info *OutInfo) {

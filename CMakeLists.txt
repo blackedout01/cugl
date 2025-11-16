@@ -37,6 +37,7 @@ target_sources(cugl
     src/cugl.c
     src/enum_info.c
     src/shader_interface.cpp
+    src/util.c
     src/vulkan_helpers.c
     VulkanMemoryAllocator/include/vk_mem_alloc.h
 )

@@ -7,6 +7,7 @@ context GlobalContext = {0};
 void cuglSwapBuffers(void) {
     context *C = &GlobalContext;
 
+#if 0
     typedef struct pipeline_state_x {
         GLuint Program;
         GLuint Vao;
@@ -20,8 +21,8 @@ void cuglSwapBuffers(void) {
     u32 CurrentPipelineIndex = 0;
 
     pipeline_state CurrentPipelineState = {0};
-    for(u64 I = 0; I < C->CommandCount; ++I) {
-        command *Command = C->Commands + I;
+    for(u64 I = 0; I < C->Commands.Count; ++I) {
+        command *Command = ArrayData(command, C->Commands) + I;
         switch(Command->Type) {
         case command_BIND_PROGRAM: {
             CurrentPipelineState.Program = Command->BindProgram.Program;
@@ -62,6 +63,7 @@ void cuglSwapBuffers(void) {
         } break;
         }
     }
+#endif
 
     VkRenderPass RenderPass = VK_NULL_HANDLE;
     {
@@ -114,6 +116,7 @@ void cuglSwapBuffers(void) {
         VulkanCheckReturn(vkCreateRenderPass(C->Device, &RenderPassCreateInfo, 0, &RenderPass));
     }
 
+#if 0
     for(u32 I = 0; I < PipelineCount; ++I) {
         pipeline_state *PipelineState = PipelineStates + I;
 
@@ -269,6 +272,7 @@ void cuglSwapBuffers(void) {
 
         VulkanCheckReturn(vkCreateGraphicsPipelines(C->Device, VK_NULL_HANDLE, 1, &GraphicsPipelineCreateInfo, 0, &PipelineState->Pipeline));
     }
+#endif
 
     uint32_t AcquiredImageIndex = 0;
     VulkanCheckReturn(vkAcquireNextImageKHR(C->Device, C->Swapchain, UINT64_MAX, C->Semaphores[semaphore_PREV_PRESENT_DONE], VK_NULL_HANDLE, &AcquiredImageIndex));
@@ -325,9 +329,9 @@ void cuglSwapBuffers(void) {
     VkCommandBuffer GraphicsCommandBuffer = C->CommandBuffers[command_buffer_GRAPHICS];
     vkCmdBeginRenderPass(GraphicsCommandBuffer, &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
     
-    
-    for(u32 I = 0; I < C->CommandCount; ++I) {
-        command *Command = C->Commands + I;
+#if 0
+    for(u32 I = 0; I < C->Commands.Count; ++I) {
+        command *Command = ArrayData(command, C->Commands) + I;
         if(Command->ChangePipeline) {
             pipeline_state *PipelineState = PipelineStates + Command->PipelineIndex;
             vkCmdBindPipeline(GraphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, PipelineState->Pipeline);
@@ -359,6 +363,7 @@ void cuglSwapBuffers(void) {
         } break;
         }
     }
+#endif
 
     vkCmdEndRenderPass(C->CommandBuffers[command_buffer_GRAPHICS]);
 
@@ -447,15 +452,16 @@ void cuglSwapBuffers(void) {
     VulkanCheckReturn(vkResetCommandBuffer(C->CommandBuffers[command_buffer_GRAPHICS], 0));
 
     vkDestroyFramebuffer(C->Device, Framebuffer, 0);
+#if 0
     for(u32 I = 0; I < PipelineCount; ++I) {
         vkDestroyPipeline(C->Device, PipelineStates[I].Pipeline, 0);
         vkDestroyPipelineLayout(C->Device, PipelineStates[I].Layout, 0);
     }
+#endif
     
     vkDestroyRenderPass(C->Device, RenderPass, 0);
 
-    C->CommandCount = 0;
-    memset(C->Commands, 0, C->CommandCapacity*sizeof(command));
+    ArrayClear(&C->Commands, sizeof(command));
     if(C->ActiveProgram) {
         command Command = {
             .Type = command_BIND_PROGRAM,
@@ -465,11 +471,11 @@ void cuglSwapBuffers(void) {
         };
         PushCommand(C, Command);
     }
-    if(C->BoundVertexArray) {
+    if(C->BoundVao) {
         command Command = {
             .Type = command_BIND_VERTEX_BUFFERS,
             .BindVertexBuffers = {
-                .VertexArray = C->BoundVertexArray
+                .VertexArray = C->BoundVao
             }
         };
         PushCommand(C, Command);
@@ -629,11 +635,8 @@ int cuglCreateContext(const context_create_params *Params) {
     C->IsSingleBuffered = Params->IsSingleBuffered;
     C->Config = GetDefaultConfig(C->DeviceInfo.SurfaceCapabilities.currentExtent.width, C->DeviceInfo.SurfaceCapabilities.currentExtent.height);
 
-    
-    pipeline_state_info PipelineStateInfos[pipeline_state_COUNT] = {0};
-    u32 PipelineStateByteCount = 0;
-    SetPipelineStateInfos(PipelineStateInfos, &C->DeviceInfo.Properties.limits, &PipelineStateByteCount);
-
+    // TODO error check
+    CreatePipelineStates(C, &C->DeviceInfo.Properties.limits);
 
     Result = 0;
     goto label_Exit;
@@ -785,27 +788,51 @@ void glBindTextureUnit(GLuint unit, GLuint texture) {}
 void glBindTextures(GLuint first, GLsizei count, const GLuint * textures) {}
 void glBindTransformFeedback(GLenum target, GLuint id) {}
 void glBindVertexArray(GLuint array) {
+    const char *Name = "glBindVertexArray";
     context *C = &GlobalContext;
 
-    if(array != 0 && CheckObjectType(C, array, object_VERTEX_ARRAY)) {
-        const char *Msg = "An INVALID_OPERATION error is generated if array is not zero or a name returned from a previous call to CreateVertexArrays or GenVertexArrays, or if such a name has since been deleted with DeleteVertexArrays.";
-        GenerateErrorMsg(C, GL_INVALID_OPERATION, GL_DEBUG_SOURCE_APPLICATION, Msg);
+    object *Object = 0;
+    CheckGL(array != 0 && CheckObjectTypeGet(C, array, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_INVALID);
+
+    if(C->BoundVao == array) {
+        return;
+    }
+    
+    C->BoundVao = array;
+
+    if(array == 0) {
+        ClearCurrentPipelineState(C, pipeline_state_VERTEX_INPUT_ATTRIBUTES);
+        ClearCurrentPipelineState(C, pipeline_state_VERTEX_INPUT_BINDINGS);
         return;
     }
 
-    if(C->BoundVertexArray != array) {
-        command Command = {
-            .Type = command_BIND_VERTEX_BUFFERS,
-            .BindVertexBuffers = {
-                .VertexArray = array
-            }
-        };
-        PushCommand(C, Command);
-        C->BoundVertexArray = array;
+    pipeline_state_info AttributeInfo = C->PipelineStatesTypes[pipeline_state_VERTEX_INPUT_ATTRIBUTES];
+    pipeline_state_info BindingInfo = C->PipelineStatesTypes[pipeline_state_VERTEX_INPUT_ATTRIBUTES];
+    if(Object->VertexArray.InputAttributes == 0) {
+        // NOTE(blackedout): Specs say to create the state here, not in glGen
+        Object->VertexArray.InputAttributes = calloc(AttributeInfo.InstanceCount, AttributeInfo.InstaceByteCount);
+        Object->VertexArray.InputBindings = calloc(BindingInfo.InstanceCount, BindingInfo.InstaceByteCount);
+        // TOOD(blackedout): Error handling
     }
+
+    CurrentPipelineStateFromPtr(C, Object->VertexArray.InputAttributes, pipeline_state_VERTEX_INPUT_ATTRIBUTES);
+    CurrentPipelineStateFromPtr(C, Object->VertexArray.InputBindings, pipeline_state_VERTEX_INPUT_BINDINGS);
 }
-void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {}
-void glBindVertexBuffers(GLuint first, GLsizei count, const GLuint * buffers, const GLintptr * offsets, const GLsizei * strides) {}
+void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {
+    const char *Name = "glBindVertexBuffer";
+    context *C = &GlobalContext;
+
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_BIND_VERTEX_BUFFER_NONE_BOUND);
+    SetVertexInputBinding(C, Object, 1, bindingindex, buffer, offset, stride, Name);
+}
+void glBindVertexBuffers(GLuint first, GLsizei count, const GLuint * buffers, const GLintptr * offsets, const GLsizei * strides) {
+    const char *Name = "glBindVertexBuffers";
+    context *C = &GlobalContext;
+
+    // TODO(blackedout):
+    Assert(0);
+}
 void glBlendColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) {
     context *C = &GlobalContext;
     C->Config.BlendState.blendConstants[0] = Clamp01(red);
@@ -1080,36 +1107,21 @@ void glClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint * value) {}
 void glClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint * value) {}
 void glClearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) {
     context *C = &GlobalContext;
-    object *Object;
-    if(CheckObjectTypeGet(C, C->BoundFramebuffers[framebuffer_WRITE], object_FRAMEBUFFER, &Object)) {
-        GenerateErrorMsg(C, GL_INVALID_OPERATION, GL_DEBUG_SOURCE_APPLICATION, "glClearColor: TODO invalid framebuffer");
-        return;
-    }
-
-    VkClearColorValue ClearColor = { 
-        .float32 = { red, green, blue, alpha }
+    pipeline_state_clear_color ClearColor = {
+        .R = red, .G = green, .B = blue, .A = alpha
     };
-    Object->Framebuffer.ClearValue.color = ClearColor;
+    pipeline_state_clear_color *State = GetCurrentPipelineState(C, pipeline_state_CLEAR_COLOR);
+    *State = ClearColor;
 }
 void glClearDepth(GLdouble depth) {
     context *C = &GlobalContext;
-    object *Object;
-    if(CheckObjectTypeGet(C, C->BoundFramebuffers[framebuffer_WRITE], object_FRAMEBUFFER, &Object)) {
-        GenerateErrorMsg(C, GL_INVALID_OPERATION, GL_DEBUG_SOURCE_APPLICATION, "glClearDepth: TODO invalid framebuffer");
-        return;
-    }
-
-    Object->Framebuffer.ClearValue.depthStencil.depth = (float)depth;
+    pipeline_state_clear_depth *State = GetCurrentPipelineState(C, pipeline_state_CLEAR_DEPTH);
+    *State = (GLfloat)depth;
 }
 void glClearDepthf(GLfloat d) {
     context *C = &GlobalContext;
-    object *Object;
-    if(CheckObjectTypeGet(C, C->BoundFramebuffers[framebuffer_WRITE], object_FRAMEBUFFER, &Object)) {
-        GenerateErrorMsg(C, GL_INVALID_OPERATION, GL_DEBUG_SOURCE_APPLICATION, "glClearDepthf: TODO invalid framebuffer");
-        return;
-    }
-
-    Object->Framebuffer.ClearValue.depthStencil.depth = d;
+    pipeline_state_clear_depth *State = GetCurrentPipelineState(C, pipeline_state_CLEAR_DEPTH);
+    *State = d;
 }
 void glClearNamedBufferData(GLuint buffer, GLenum internalformat, GLenum format, GLenum type, const void * data) {}
 void glClearNamedBufferSubData(GLuint buffer, GLenum internalformat, GLintptr offset, GLsizeiptr size, GLenum format, GLenum type, const void * data) {}
@@ -1119,13 +1131,8 @@ void glClearNamedFramebufferiv(GLuint framebuffer, GLenum buffer, GLint drawbuff
 void glClearNamedFramebufferuiv(GLuint framebuffer, GLenum buffer, GLint drawbuffer, const GLuint * value) {}
 void glClearStencil(GLint s) {
     context *C = &GlobalContext;
-    object *Object;
-    if(CheckObjectTypeGet(C, C->BoundFramebuffers[framebuffer_WRITE], object_FRAMEBUFFER, &Object)) {
-        GenerateErrorMsg(C, GL_INVALID_OPERATION, GL_DEBUG_SOURCE_APPLICATION, "glClearStencil: TODO invalid framebuffer");
-        return;
-    }
-
-    Object->Framebuffer.ClearValue.depthStencil.stencil = (uint32_t)s;
+    pipeline_state_clear_stencil *State = GetCurrentPipelineState(C, pipeline_state_CLEAR_STENCIL);
+    *State = s;
 }
 void glClearTexImage(GLuint texture, GLint level, GLenum format, GLenum type, const void * data) {}
 void glClearTexSubImage(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void * data) {}
@@ -1309,7 +1316,12 @@ void glDeleteTextures(GLsizei n, const GLuint * textures) {
 }
 void glDeleteTransformFeedbacks(GLsizei n, const GLuint * ids) {}
 void glDeleteVertexArrays(GLsizei n, const GLuint * arrays) {
-    DeleteObjectsSizei(&GlobalContext, n, arrays, object_VERTEX_ARRAY);
+    const char *Name = "glDeleteVertexArrays";
+    context *C = &GlobalContext;
+    CheckGL(n < 0, gl_error_N_NEGATIVE);
+    // TODO(blackedout): Silently ignore unused handles in arrays
+    DeleteObjectsSizei(C, n, arrays, object_VERTEX_ARRAY);
+    // TODO(blackedout): Revert binding to zero if is bound
 }
 void glDepthFunc(GLenum func) {
     context *C = &GlobalContext;
@@ -1341,11 +1353,18 @@ void glDisable(GLenum cap) {
     HandledCheckCapSet(&GlobalContext, cap, 0);
 }
 void glDisableVertexArrayAttrib(GLuint vaobj, GLuint index) {
-    SetVertexArrayAttribEnabled(&GlobalContext, vaobj, index, 0);
+    const char *Name = "glDisableVertexArrayAttrib";
+    context *C = &GlobalContext;
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_XABLE_VERTEX_ARRAY_ATTRIB_INVALID);
+    SetVertexInputAttributeEnabled(C, Object, C->BoundVao == vaobj, index, 0, Name);
 }
 void glDisableVertexAttribArray(GLuint index) {
+    const char *Name = "glDisableVertexAttribArray";
     context *C = &GlobalContext;
-    SetVertexArrayAttribEnabled(C, C->BoundVertexArray, index, 0);
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_XABLE_VERTEX_ATTRIB_ARRAY_NONE_BOUND);
+    SetVertexInputAttributeEnabled(C, Object, 1, index, 0, Name);
 }
 void glDisablei(GLenum target, GLuint index) {}
 void glDispatchCompute(GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z) {}
@@ -1416,11 +1435,18 @@ void glEnable(GLenum cap) {
     HandledCheckCapSet(&GlobalContext, cap, 1);
 }
 void glEnableVertexArrayAttrib(GLuint vaobj, GLuint index) {
-    SetVertexArrayAttribEnabled(&GlobalContext, vaobj, index, 1);
+    const char *Name = "glEnableVertexArrayAttrib";
+    context *C = &GlobalContext;
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_XABLE_VERTEX_ARRAY_ATTRIB_INVALID);
+    SetVertexInputAttributeEnabled(C, Object, C->BoundVao == vaobj, index, 1, Name);
 }
 void glEnableVertexAttribArray(GLuint index) {
+    const char *Name = "glEnableVertexAttribArray";
     context *C = &GlobalContext;
-    SetVertexArrayAttribEnabled(C, C->BoundVertexArray, index, 1);
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_XABLE_VERTEX_ATTRIB_ARRAY_NONE_BOUND);
+    SetVertexInputAttributeEnabled(C, Object, 1, index, 1, Name);
 }
 void glEnablei(GLenum target, GLuint index) {}
 void glEndConditionalRender(void) {}
@@ -1478,9 +1504,14 @@ void glGenTextures(GLsizei n, GLuint * textures) {
 }
 void glGenTransformFeedbacks(GLsizei n, GLuint * ids) {}
 void glGenVertexArrays(GLsizei n, GLuint * arrays) {
+    const char *Name = "";
+    context *C = &GlobalContext;
+    CheckGL(n < 0, gl_error_N_NEGATIVE);
+
     object Template = {0};
     Template.Type = object_VERTEX_ARRAY;
-    CreateObjectsSizei(&GlobalContext, Template, n, arrays);
+    CreateObjectsSizei(C, Template, n, arrays);
+    // NOTE(blackedout): State acquiry only when first bound (specs).
 }
 void glGenerateMipmap(GLenum target) {}
 void glGenerateTextureMipmap(GLuint texture) {}
@@ -1680,6 +1711,7 @@ void glGetShaderiv(GLuint shader, GLenum pname, GLint * params) {
     default: {
         const char *Msg = "glGetShaderiv: An INVALID_ENUM error is generated if pname is not SHADER_TYPE, DELETE_STATUS, COMPILE_STATUS, INFO_LOG_LENGTH, SHADER_SOURCE_LENGTH, or SPIR_V_BINARY.";
         GenerateErrorMsg(C, GL_INVALID_ENUM, GL_DEBUG_SOURCE_APPLICATION, Msg);
+        return;
     }
     }
 }
@@ -1765,16 +1797,12 @@ GLboolean glIsTexture(GLuint texture) {return GL_TRUE;}
 GLboolean glIsTransformFeedback(GLuint id) {return GL_TRUE;}
 GLboolean glIsVertexArray(GLuint array) {return GL_TRUE;}
 void glLineWidth(GLfloat width) {
+    const char *Name = "glLineWidth";
     context *C = &GlobalContext;
-    if(width <= (GLfloat)0.0) {
-        const char *Msg = "glLineWidth: An INVALID_VALUE error is generated if width is less than or equal to zero.";
-        GenerateErrorMsg(C, GL_INVALID_VALUE, GL_DEBUG_SOURCE_APPLICATION, Msg);
-        return;
-    }
+    CheckGL(width <= (GLfloat)0.0, gl_error_LINE_WIDTH_LE_ZERO);
 
     C->Config.RasterState.lineWidth = (float)width;
 }
-#include "stdio.h"
 void glLinkProgram(GLuint program) {
     context *C = &GlobalContext;
     object *Object = 0;
@@ -1952,18 +1980,59 @@ void glSamplerParameterfv(GLuint sampler, GLenum pname, const GLfloat * param) {
 void glSamplerParameteri(GLuint sampler, GLenum pname, GLint param) {}
 void glSamplerParameteriv(GLuint sampler, GLenum pname, const GLint * param) {}
 void glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
+    const char *Name = "glScissor";
     context *C = &GlobalContext;
-    VkRect2D Scissor = {
-        .offset.x = (float)x,
-        .offset.y = (float)y,
-        .extent.width = (float)width,
-        .extent.height = (float)height,
+    CheckGL(width < 0 || height < 0, gl_error_SCISSOR_WIDTH_HEIGHT_NEGATIVE);
+
+    pipeline_state_scissor Scissor = {
+        .X = x, .Y = y, .W = width, .H = height
     };
-    C->Config.Scissor = Scissor;
+    pipeline_state_scissor *State = GetCurrentPipelineState(C, pipeline_state_SCISSOR);
+    for(u32 I = 0; I < C->PipelineStatesTypes[pipeline_state_SCISSOR].InstanceCount; ++I) {
+        State[I] = Scissor;
+    }
 }
-void glScissorArrayv(GLuint first, GLsizei count, const GLint * v) {}
-void glScissorIndexed(GLuint index, GLint left, GLint bottom, GLsizei width, GLsizei height) {}
-void glScissorIndexedv(GLuint index, const GLint * v) {}
+void glScissorArrayv(GLuint first, GLsizei count, const GLint * v) {
+    const char *Name = "glScissorArrayv";
+    context *C = &GlobalContext;
+    for(u32 I = 0; I < count; ++I) {
+        CheckGL(v[4*I + 2] < 0 || v[4*I + 3] < 0, gl_error_SCISSOR_WIDTH_HEIGHT_NEGATIVE);
+    }
+    CheckGL(count < 0, gl_error_SCISSOR_COUNT_NEGATIVE);
+    CheckGL(first + count > C->PipelineStatesTypes[pipeline_state_SCISSOR].InstanceCount, gl_error_SCISSOR_INDEX);
+
+    pipeline_state_scissor *State = GetCurrentPipelineState(C, pipeline_state_SCISSOR);
+    for(u32 I = 0; I < count; ++I) {
+        pipeline_state_scissor Scissor = {
+            .X = v[4*I + 0], .Y = v[4*I + 1], .W = v[4*I + 2], .H = v[4*I + 3]
+        };
+        State[first + I] = Scissor;
+    }
+}
+void glScissorIndexed(GLuint index, GLint left, GLint bottom, GLsizei width, GLsizei height) {
+    const char *Name = "glScissorIndexed";
+    context *C = &GlobalContext;
+    CheckGL(width < 0 || height < 0, gl_error_SCISSOR_WIDTH_HEIGHT_NEGATIVE);
+    CheckGL(index >= C->PipelineStatesTypes[pipeline_state_SCISSOR].InstanceCount, gl_error_SCISSOR_INDEX);
+
+    pipeline_state_scissor Scissor = {
+        .X = left, .Y = bottom, .W = width, .H = height
+    };
+    pipeline_state_scissor *State = GetCurrentPipelineState(C, pipeline_state_SCISSOR);
+    State[index] = Scissor;
+}
+void glScissorIndexedv(GLuint index, const GLint * v) {
+    const char *Name = "glScissorIndexed";
+    context *C = &GlobalContext;
+    CheckGL(v[2] < 0 || v[3] < 0, gl_error_SCISSOR_WIDTH_HEIGHT_NEGATIVE);
+    CheckGL(index >= C->PipelineStatesTypes[pipeline_state_SCISSOR].InstanceCount, gl_error_SCISSOR_INDEX);
+
+    pipeline_state_scissor Scissor = {
+        .X = v[0], .Y = v[1], .W = v[2], .H = v[3]
+    };
+    pipeline_state_scissor *State = GetCurrentPipelineState(C, pipeline_state_SCISSOR);
+    State[index] = Scissor;
+}
 void glShaderBinary(GLsizei count, const GLuint * shaders, GLenum binaryFormat, const void * binary, GLsizei length) {}
 void glShaderSource(GLuint shader, GLsizei count, const GLchar *const* string, const GLint * length) {
     context *C = &GlobalContext;
@@ -2173,14 +2242,54 @@ void glUseProgram(GLuint program) {
 void glUseProgramStages(GLuint pipeline, GLbitfield stages, GLuint program) {}
 void glValidateProgram(GLuint program) {}
 void glValidateProgramPipeline(GLuint pipeline) {}
-void glVertexArrayAttribBinding(GLuint vaobj, GLuint attribindex, GLuint bindingindex) {}
-void glVertexArrayAttribFormat(GLuint vaobj, GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset) {}
-void glVertexArrayAttribIFormat(GLuint vaobj, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {}
-void glVertexArrayAttribLFormat(GLuint vaobj, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {}
+void glVertexArrayAttribBinding(GLuint vaobj, GLuint attribindex, GLuint bindingindex) {
+    const char *Name = "glVertexArrayAttribBinding";
+    context *C = &GlobalContext;
+
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, vaobj, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_ATTRIB_BINDING_VAO_INVALID);
+    SetVertexInputAttributeBinding(C, Object, C->BoundVao == vaobj, attribindex, bindingindex, Name);
+}
+void glVertexArrayAttribFormat(GLuint vaobj, GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset) {
+    const char *Name = "glVertexArrayAttribFormat";
+    context *C = &GlobalContext;
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, vaobj, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_ATTRIB_FORMAT_VAO_INVALID);
+
+    u32 IntegerHandlingBits = vertex_input_attribute_INTEGER_HANDLING_ENABLED | (normalized == GL_FALSE ? vertex_input_attribute_INTEGER_NORMALIZE : 0);
+    SetVertexInputAttributeFormat(C, Object, C->BoundVao == vaobj, attribindex, size, type, relativeoffset, IntegerHandlingBits, Name);
+}
+void glVertexArrayAttribIFormat(GLuint vaobj, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {
+    const char *Name = "glVertexArrayAttribIFormat";
+    context *C = &GlobalContext;
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, vaobj, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_ATTRIB_FORMAT_VAO_INVALID);
+    SetVertexInputAttributeFormat(C, Object, C->BoundVao == vaobj, attribindex, size, type, relativeoffset, 0, Name);
+}
+void glVertexArrayAttribLFormat(GLuint vaobj, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {
+    const char *Name = "glVertexArrayAttribLFormat";
+    context *C = &GlobalContext;
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, vaobj, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_ATTRIB_FORMAT_VAO_INVALID);
+    SetVertexInputAttributeFormat(C, Object, C->BoundVao == vaobj, attribindex, size, type, relativeoffset, 0, Name);
+}
 void glVertexArrayBindingDivisor(GLuint vaobj, GLuint bindingindex, GLuint divisor) {}
 void glVertexArrayElementBuffer(GLuint vaobj, GLuint buffer) {}
-void glVertexArrayVertexBuffer(GLuint vaobj, GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {}
-void glVertexArrayVertexBuffers(GLuint vaobj, GLuint first, GLsizei count, const GLuint * buffers, const GLintptr * offsets, const GLsizei * strides) {}
+void glVertexArrayVertexBuffer(GLuint vaobj, GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {
+    const char *Name = "glVertexArrayVertexBuffer";
+    context *C = &GlobalContext;
+
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, vaobj, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_VERTEX_BUFFER_VAO_INVALID);
+    SetVertexInputBinding(C, Object, C->BoundVao == vaobj, bindingindex, buffer, offset, stride, Name);
+}
+void glVertexArrayVertexBuffers(GLuint vaobj, GLuint first, GLsizei count, const GLuint * buffers, const GLintptr * offsets, const GLsizei * strides) {
+    const char *Name = "glVertexArrayVertexBuffers";
+    context *C = &GlobalContext;
+
+    // TODO(blackedout):
+    Assert(0);
+}
 void glVertexAttrib1d(GLuint index, GLdouble x) {}
 void glVertexAttrib1dv(GLuint index, const GLdouble * v) {}
 void glVertexAttrib1f(GLuint index, GLfloat x) {}
@@ -2217,9 +2326,24 @@ void glVertexAttrib4sv(GLuint index, const GLshort * v) {}
 void glVertexAttrib4ubv(GLuint index, const GLubyte * v) {}
 void glVertexAttrib4uiv(GLuint index, const GLuint * v) {}
 void glVertexAttrib4usv(GLuint index, const GLushort * v) {}
-void glVertexAttribBinding(GLuint attribindex, GLuint bindingindex) {}
+void glVertexAttribBinding(GLuint attribindex, GLuint bindingindex) {
+    const char *Name = "glVertexAttribBinding";
+    context *C = &GlobalContext;
+
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_BINDING_NONE_BOUND);
+    SetVertexInputAttributeBinding(C, Object, 1, attribindex, bindingindex, Name);
+}
 void glVertexAttribDivisor(GLuint index, GLuint divisor) {}
-void glVertexAttribFormat(GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset) {}
+void glVertexAttribFormat(GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset) {
+    const char *Name = "glVertexAttribFormat";
+    context *C = &GlobalContext;
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_FORMAT_NONE_BOUND);
+
+    u32 IntegerHandlingBits = vertex_input_attribute_INTEGER_HANDLING_ENABLED | (normalized == GL_FALSE ? vertex_input_attribute_INTEGER_NORMALIZE : 0);
+    SetVertexInputAttributeFormat(C, Object, 1, attribindex, size, type, relativeoffset, IntegerHandlingBits, Name);
+}
 void glVertexAttribI1i(GLuint index, GLint x) {}
 void glVertexAttribI1iv(GLuint index, const GLint * v) {}
 void glVertexAttribI1ui(GLuint index, GLuint x) {}
@@ -2240,8 +2364,21 @@ void glVertexAttribI4ubv(GLuint index, const GLubyte * v) {}
 void glVertexAttribI4ui(GLuint index, GLuint x, GLuint y, GLuint z, GLuint w) {}
 void glVertexAttribI4uiv(GLuint index, const GLuint * v) {}
 void glVertexAttribI4usv(GLuint index, const GLushort * v) {}
-void glVertexAttribIFormat(GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {}
-void glVertexAttribIPointer(GLuint index, GLint size, GLenum type, GLsizei stride, const void * pointer) {}
+void glVertexAttribIFormat(GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {
+    const char *Name = "glVertexAttribIFormat";
+    context *C = &GlobalContext;
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_FORMAT_NONE_BOUND);
+    SetVertexInputAttributeFormat(C, Object, 1, attribindex, size, type, relativeoffset, 0, Name);
+}
+void glVertexAttribIPointer(GLuint index, GLint size, GLenum type, GLsizei stride, const void * pointer) {
+    const char *Name = "glVertexAttribIPointer";
+    context *C = &GlobalContext;
+
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_POINTER_NONE_BOUND);
+    SetVertexInputAttributePointer(C, Object, index, size, type, stride, pointer, 0, Name);
+}
 void glVertexAttribL1d(GLuint index, GLdouble x) {}
 void glVertexAttribL1dv(GLuint index, const GLdouble * v) {}
 void glVertexAttribL2d(GLuint index, GLdouble x, GLdouble y) {}
@@ -2250,8 +2387,21 @@ void glVertexAttribL3d(GLuint index, GLdouble x, GLdouble y, GLdouble z) {}
 void glVertexAttribL3dv(GLuint index, const GLdouble * v) {}
 void glVertexAttribL4d(GLuint index, GLdouble x, GLdouble y, GLdouble z, GLdouble w) {}
 void glVertexAttribL4dv(GLuint index, const GLdouble * v) {}
-void glVertexAttribLFormat(GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {}
-void glVertexAttribLPointer(GLuint index, GLint size, GLenum type, GLsizei stride, const void * pointer) {}
+void glVertexAttribLFormat(GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {
+    const char *Name = "glVertexAttribLFormat";
+    context *C = &GlobalContext;
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_FORMAT_NONE_BOUND);
+    SetVertexInputAttributeFormat(C, Object, 1, attribindex, size, type, relativeoffset, 0, Name);
+}
+void glVertexAttribLPointer(GLuint index, GLint size, GLenum type, GLsizei stride, const void * pointer) {
+    const char *Name = "glVertexAttribLPointer";
+    context *C = &GlobalContext;
+
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_POINTER_NONE_BOUND);
+    SetVertexInputAttributePointer(C, Object, index, size, type, stride, pointer, 0, Name);
+}
 void glVertexAttribP1ui(GLuint index, GLenum type, GLboolean normalized, GLuint value) {}
 void glVertexAttribP1uiv(GLuint index, GLenum type, GLboolean normalized, const GLuint * value) {}
 void glVertexAttribP2ui(GLuint index, GLenum type, GLboolean normalized, GLuint value) {}
@@ -2261,101 +2411,63 @@ void glVertexAttribP3uiv(GLuint index, GLenum type, GLboolean normalized, const 
 void glVertexAttribP4ui(GLuint index, GLenum type, GLboolean normalized, GLuint value) {}
 void glVertexAttribP4uiv(GLuint index, GLenum type, GLboolean normalized, const GLuint * value) {}
 void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void * pointer) {
+    const char *Name = "glVertexAttribPointer";
     context *C = &GlobalContext;
-    object *Object;
-    if(CheckObjectTypeGet(C, C->BoundVertexArray, object_VERTEX_ARRAY, &Object)) {
-        const char *Msg = "An INVALID_OPERATION error is generated if no vertex array object is bound.";
-        GenerateErrorMsg(C, GL_INVALID_OPERATION, GL_DEBUG_SOURCE_APPLICATION, Msg);
-        return;
-    }
 
-    if(index >= VERTEX_ATTRIB_CAPACITY) {
-        const char *Msg = "An INVALID_VALUE error is generated if bindingindex is greater than or equal to the value of MAX_VERTEX_ATTRIB_BINDINGS.";
-        GenerateErrorMsg(C, GL_INVALID_VALUE, GL_DEBUG_SOURCE_APPLICATION, Msg);
-        return;
-    }
+    // NOTE(blackedout): Remember that `pointer` specifies the offset of the binding, NOT the relative offset of the format.
+    // Since this function sets both anyway, it doesn't make a difference.
 
-    buffer_target_info ArrayBufferTargetInfo;
-    Assert(0 == GetBufferTargetInfo(GL_ARRAY_BUFFER, &ArrayBufferTargetInfo));
+    object *Object = 0;
+    CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_POINTER_NONE_BOUND);
 
-    GLuint BoundArrayBuffer = C->BoundBuffers[ArrayBufferTargetInfo.Index];
-    if(CheckObjectType(C, BoundArrayBuffer, object_BUFFER)) {
-        const char *Msg = "Custom: calling glVertexAttribPointer without a buffer bound to GL_ARRAY_BUFFER is invalid.";
-        GenerateErrorMsg(C, GL_INVALID_OPERATION, GL_DEBUG_SOURCE_APPLICATION, Msg);
-        return;
-    }
-
-    VkVertexInputAttributeDescription AttribDesc = {0};
-    AttribDesc.location = index;
-    AttribDesc.binding = 0;
-    AttribDesc.offset = (u32)(uintptr_t)pointer;
-
-    u32 AttribByteCount = 0;
-
-#define MakeSizeCase(Count, Format) case (Count): AttribDesc.format = (Format); break
-#define MakeDefaultCase default: AttribDesc.format = VK_FORMAT_UNDEFINED; break
-
-#define MakeCase(GlType, BitCount, VulkanType)\
-    case GlType:\
-        switch(size) {\
-        MakeSizeCase(1, VK_FORMAT_R ## BitCount ## _ ## VulkanType);\
-        MakeSizeCase(2, VK_FORMAT_R ## BitCount ## G ## BitCount ## _ ## VulkanType);\
-        MakeSizeCase(3, VK_FORMAT_R ## BitCount ## G ## BitCount ## B ## BitCount ## _ ## VulkanType);\
-        MakeSizeCase(4, VK_FORMAT_R ## BitCount ## G ## BitCount ## B ## BitCount ## A ## BitCount ## _ ## VulkanType);\
-        MakeDefaultCase;\
-        }\
-        AttribByteCount = size*BitCount/8;\
-        break
-        
-    switch(type) {
-    MakeCase(GL_BYTE, 8, SINT);
-    MakeCase(GL_UNSIGNED_BYTE, 8, UINT);
-    MakeCase(GL_SHORT, 16, SINT);
-    MakeCase(GL_UNSIGNED_SHORT, 16, UINT);
-    MakeCase(GL_INT, 32, SINT);
-    MakeCase(GL_UNSIGNED_INT, 32, UINT);
-    MakeCase(GL_HALF_FLOAT, 16, SFLOAT);
-    MakeCase(GL_FLOAT, 32, SFLOAT);
-    MakeDefaultCase;
-    }
-#undef MakeCasae
-
-#undef SizeDefaultCase
-#undef MakeSizeCase
-
-    if(AttribDesc.format == VK_FORMAT_UNDEFINED) {
-        const char *Msg = "Custom: glVertexAttribPointer size and type combination invalid.";
-        GenerateErrorMsg(C, GL_INVALID_VALUE, GL_DEBUG_SOURCE_APPLICATION, Msg);
-        return;
-    }
-
-    VkVertexInputBindingDescription BindingDesc = {0};
-    BindingDesc.stride = stride ? stride : AttribByteCount;
-    BindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    u8 ZeroBlock[sizeof(VkVertexInputBindingDescription)] = {0};
-    if(memcmp(&Object->VertexArray.Binding, ZeroBlock, sizeof(ZeroBlock)) != 0 && memcmp(&Object->VertexArray.Binding, &BindingDesc, sizeof(BindingDesc)) != 0) {
-        // NOTE(blackedout): Previous binding has been set and is not equal to the binding of this call
-        const char *Msg = "Custom: glVertexAttribPointer bindings don't match";
-        GenerateErrorMsg(C, GL_INVALID_VALUE, GL_DEBUG_SOURCE_APPLICATION, Msg);
-        return;
-    }
-
-    Object->VertexArray.Binding = BindingDesc;
-    Object->VertexArray.Attribs[index].Buffer = BoundArrayBuffer;
-    Object->VertexArray.Attribs[index].Desc = AttribDesc;
+    u32 IntegerHandlingBits = vertex_input_attribute_INTEGER_HANDLING_ENABLED | (normalized == GL_FALSE ? vertex_input_attribute_INTEGER_NORMALIZE : 0);
+    SetVertexInputAttributePointer(C, Object, index, size, type, stride, pointer, IntegerHandlingBits, Name);
 }
 void glVertexBindingDivisor(GLuint bindingindex, GLuint divisor) {}
 void glViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
     context *C = &GlobalContext;
-    VkViewport Viewport = C->Config.Viewport;
-    Viewport.x = x;
-    Viewport.y = y;
-    Viewport.width = width;
-    Viewport.height = height;
-    C->Config.Viewport = Viewport;
+    pipeline_state_viewport Viewport = {
+        .X = (GLfloat)x, .Y = (GLfloat)y, .W = (GLfloat)width, .H = (GLfloat)height
+    };
+    pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
+    for(u32 I = 0; I < C->PipelineStatesTypes[pipeline_state_VIEWPORT].InstanceCount; ++I) {
+        State[I] = Viewport;
+    }
 }
-void glViewportArrayv(GLuint first, GLsizei count, const GLfloat * v) {}
-void glViewportIndexedf(GLuint index, GLfloat x, GLfloat y, GLfloat w, GLfloat h) {}
-void glViewportIndexedfv(GLuint index, const GLfloat * v) {}
+void glViewportArrayv(GLuint first, GLsizei count, const GLfloat * v) {
+    const char *Name = "glViewportArrayv";
+    context *C = &GlobalContext;
+    CheckGL(count < 0, gl_error_VIEWPORT_COUNT_NEGATIVE);
+    CheckGL(first + count > C->PipelineStatesTypes[pipeline_state_VIEWPORT].InstanceCount, gl_error_VIEWPORT_INDEX);
+    
+    pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
+    for(u32 I = 0; I < count; ++I) {
+        pipeline_state_viewport Viewport = {
+            .X = v[4*I + 0], .Y = v[4*I + 1], .W = v[4*I + 2], .H = v[4*I + 3]
+        };
+        State[first + I] = Viewport;
+    }
+}
+void glViewportIndexedf(GLuint index, GLfloat x, GLfloat y, GLfloat w, GLfloat h) {
+    const char *Name = "glViewportIndexedf";
+    context *C = &GlobalContext;
+    CheckGL(index >= C->PipelineStatesTypes[pipeline_state_VIEWPORT].InstanceCount, gl_error_VIEWPORT_INDEX);
+
+    pipeline_state_viewport Viewport = {
+        .X = x, .Y = y, .W = w, .H = h
+    };
+    pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
+    State[index] = Viewport;
+}
+void glViewportIndexedfv(GLuint index, const GLfloat * v) {
+    const char *Name = "glViewportIndexedfv";
+    context *C = &GlobalContext;
+    CheckGL(index >= C->PipelineStatesTypes[pipeline_state_VIEWPORT].InstanceCount, gl_error_VIEWPORT_INDEX);
+
+    pipeline_state_viewport Viewport = {
+        .X = v[0], .Y = v[1], .W = v[2], .H = v[3]
+    };
+    pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
+    State[index] = Viewport;
+}
 void glWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {}
