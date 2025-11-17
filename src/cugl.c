@@ -1,69 +1,10 @@
 #include "cugl/cugl.h"
-
 #include "internal.h"
 
-context GlobalContext = {0};
-
 void cuglSwapBuffers(void) {
-    context *C = &GlobalContext;
-
-#if 0
-    typedef struct pipeline_state_x {
-        GLuint Program;
-        GLuint Vao;
-
-        VkPipeline Pipeline;
-        VkPipelineLayout Layout;
-    } pipeline_state;
-
-    u32 PipelineCount = 0;
-    pipeline_state PipelineStates[16];
-    u32 CurrentPipelineIndex = 0;
-
-    pipeline_state CurrentPipelineState = {0};
-    for(u64 I = 0; I < C->Commands.Count; ++I) {
-        command *Command = ArrayData(command, C->Commands) + I;
-        switch(Command->Type) {
-        case command_BIND_PROGRAM: {
-            CurrentPipelineState.Program = Command->BindProgram.Program;
-
-            int FoundMatch = 0;
-            u32 MatchIndex = 0;
-            for(u32 J = 0; J < PipelineCount; ++I) {
-                if(PipelineStates[J].Program == CurrentPipelineState.Program && PipelineStates[J].Vao == CurrentPipelineState.Vao) {
-                    FoundMatch = 1;
-                    MatchIndex = J;
-                }
-            }
-            // First try to find a pipeline state that matches the current state
-
-            if(FoundMatch) {
-                if(MatchIndex == CurrentPipelineIndex) {
-                    // Do nothing
-                } else {
-                    CurrentPipelineIndex = MatchIndex;
-                    Command->ChangePipeline = 1;
-                    Command->PipelineIndex = CurrentPipelineIndex;
-                }
-            } else {
-                // NOTE(blackedout): Create new pipeline state
-                CurrentPipelineIndex = PipelineCount++;
-                PipelineStates[CurrentPipelineIndex] = CurrentPipelineState;
-                Command->ChangePipeline = 1;
-                Command->PipelineIndex = CurrentPipelineIndex;
-            }
-        } break;
-        case command_BIND_VERTEX_BUFFERS: {
-            // TODO(blackedout): Change pipeline only if different input attribute state
-            CurrentPipelineState.Vao = Command->BindVertexBuffers.VertexArray;
-            PipelineStates[CurrentPipelineIndex] = CurrentPipelineState;
-        } break;
-        default: {
-
-        } break;
-        }
-    }
-#endif
+    const char *Name = "cuglSwapBuffers";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     VkRenderPass RenderPass = VK_NULL_HANDLE;
     {
@@ -116,163 +57,9 @@ void cuglSwapBuffers(void) {
         VulkanCheckReturn(vkCreateRenderPass(C->Device, &RenderPassCreateInfo, 0, &RenderPass));
     }
 
-#if 0
-    for(u32 I = 0; I < PipelineCount; ++I) {
-        pipeline_state *PipelineState = PipelineStates + I;
-
-        // NOTE(blackedout): First, validate if a pipeline can be created
-        if(PipelineState->Program == 0 || PipelineState->Vao == 0) {
-            GenerateErrorMsg(C, GL_INVALID_OPERATION, GL_DEBUG_SOURCE_APPLICATION, "glSwapBuffers: invalid pipeline");
-            continue;
-        }
-
-        object *ObjectP = 0;
-        GetObject(C, PipelineState->Program, &ObjectP);
-        VkPipelineShaderStageCreateInfo PipelineStageCreateInfos[PROGRAM_SHADER_CAPACITY] = {0};
-        for(u32 J = 0; J < ObjectP->Program.AttachedShaderCount; ++J) {
-            object *ObjectS = ObjectP->Program.AttachedShaders[J];
-            shader_type_info TypeInfo = {0};
-            GetShaderTypeInfo(ObjectS->Shader.Type, &TypeInfo); // TODO(blackedout): Error handling
-            VkPipelineShaderStageCreateInfo ShaderStageCreateInfo = {
-                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .pNext = 0,
-                .flags = 0,
-                .stage = TypeInfo.VulkanBit,
-                .module = ObjectS->Shader.VulkanModule,
-                .pName = "main", // NOTE(blackedout): Entry point
-                .pSpecializationInfo = 0
-            };
-            PipelineStageCreateInfos[J] = ShaderStageCreateInfo;
-        }
-        
-#if 0
-        VkDynamicState VulkanDynamicStates[] = {
-            VK_DYNAMIC_STATE_VIEWPORT,
-            VK_DYNAMIC_STATE_SCISSOR,
-        };
-
-        VkPipelineDynamicStateCreateInfo PipelineDynamicStateCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .dynamicStateCount = ArrayCount(VulkanDynamicStates),
-            .pDynamicStates = VulkanDynamicStates
-        };
-#endif
-
-        VkPipelineInputAssemblyStateCreateInfo PipelineInputAssemblyStateCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .topology = C->CurrentPrimitiveTopoloy,
-            .primitiveRestartEnable = VK_FALSE,
-        };
-
-        VkPipelineViewportStateCreateInfo PipelineViewportStateCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .viewportCount = 1,
-            .pViewports = &C->Config.Viewport,
-            .scissorCount = 1,
-            .pScissors = &C->Config.Scissor,
-        };
-
-        VkPipelineMultisampleStateCreateInfo PipelineMultiSampleStateCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .rasterizationSamples = 1,
-            .sampleShadingEnable = VK_FALSE, // TODO(blackedout): Enable this?
-            .minSampleShading = 1.0f,
-            .pSampleMask = 0,
-            .alphaToCoverageEnable = VK_FALSE,
-            .alphaToOneEnable = VK_FALSE
-        };
-        
-        VkStencilOpState EmptyStencilOpState = {0};
-        VkPipelineDepthStencilStateCreateInfo PipelineDepthStencilStateCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .depthTestEnable = VK_TRUE,
-            .depthWriteEnable = VK_TRUE,
-            .depthCompareOp = VK_COMPARE_OP_LESS,
-            .depthBoundsTestEnable = VK_FALSE,
-            .stencilTestEnable = VK_FALSE,
-            .front = EmptyStencilOpState,
-            .back = EmptyStencilOpState,
-            .minDepthBounds = 0.0f,
-            .maxDepthBounds = 1.0f,
-        };
-
-        VkPipelineColorBlendStateCreateInfo PipelineColorBlendStateCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .logicOpEnable = VK_FALSE,
-            .logicOp = VK_LOGIC_OP_CLEAR,
-            .attachmentCount = 1,
-            .pAttachments = &C->Config.BlendAttachmentState,
-            .blendConstants = {0.0f, 0.0f, 0.0f, 0.0f}
-        };
-
-        VkPipelineLayoutCreateInfo PipelineLayoutCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .setLayoutCount = 0,
-            .pSetLayouts = 0,
-            .pushConstantRangeCount = 0,
-            .pPushConstantRanges = 0,
-        };
-        VulkanCheckReturn(vkCreatePipelineLayout(C->Device, &PipelineLayoutCreateInfo, 0, &PipelineState->Layout));
-
-        object *ObjectV = 0;
-        GetObject(C, PipelineState->Vao, &ObjectV);
-
-        u32 AttribDescCount = 0;
-        VkVertexInputAttributeDescription AttributeDescriptions[VERTEX_ATTRIB_CAPACITY] = {0};
-        for(u32 J = 0; J < VERTEX_ATTRIB_CAPACITY; ++J) {
-            if(ObjectV->VertexArray.Attribs[J].Enabled) {
-                AttributeDescriptions[AttribDescCount++] = ObjectV->VertexArray.Attribs[J].Desc;
-            }
-        }
-        VkPipelineVertexInputStateCreateInfo PipelineVertexInputStateCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .vertexBindingDescriptionCount = 1,
-            .pVertexBindingDescriptions = &ObjectV->VertexArray.Binding,
-            .vertexAttributeDescriptionCount = AttribDescCount,
-            .pVertexAttributeDescriptions = AttributeDescriptions,
-        };
-
-        VkGraphicsPipelineCreateInfo GraphicsPipelineCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .stageCount = ObjectP->Program.AttachedShaderCount,
-            .pStages = PipelineStageCreateInfos,
-            .pVertexInputState = &PipelineVertexInputStateCreateInfo,
-            .pInputAssemblyState = &PipelineInputAssemblyStateCreateInfo,
-            .pTessellationState = 0,
-            .pViewportState = &PipelineViewportStateCreateInfo,
-            .pRasterizationState = &C->Config.RasterState,
-            .pMultisampleState = &PipelineMultiSampleStateCreateInfo,
-            .pDepthStencilState = &PipelineDepthStencilStateCreateInfo,
-            .pColorBlendState = &PipelineColorBlendStateCreateInfo,
-            //.pDynamicState = &PipelineDynamicStateCreateInfo,
-            .layout = PipelineState->Layout,
-            .renderPass = RenderPass,
-            .subpass = 0,
-            .basePipelineHandle = VK_NULL_HANDLE,
-            .basePipelineIndex = -1
-        };
-
-        VulkanCheckReturn(vkCreateGraphicsPipelines(C->Device, VK_NULL_HANDLE, 1, &GraphicsPipelineCreateInfo, 0, &PipelineState->Pipeline));
+    for(u32 I = 1; I < C->PipelineStates.Count; ++I) {
+        CreatePipeline(C, I, RenderPass);
     }
-#endif
 
     uint32_t AcquiredImageIndex = 0;
     VulkanCheckReturn(vkAcquireNextImageKHR(C->Device, C->Swapchain, UINT64_MAX, C->Semaphores[semaphore_PREV_PRESENT_DONE], VK_NULL_HANDLE, &AcquiredImageIndex));
@@ -329,41 +116,24 @@ void cuglSwapBuffers(void) {
     VkCommandBuffer GraphicsCommandBuffer = C->CommandBuffers[command_buffer_GRAPHICS];
     vkCmdBeginRenderPass(GraphicsCommandBuffer, &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
     
-#if 0
     for(u32 I = 0; I < C->Commands.Count; ++I) {
         command *Command = ArrayData(command, C->Commands) + I;
-        if(Command->ChangePipeline) {
-            pipeline_state *PipelineState = PipelineStates + Command->PipelineIndex;
-            vkCmdBindPipeline(GraphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, PipelineState->Pipeline);
-        }
-
         switch(Command->Type) {
-        default:
-        case command_BIND_PROGRAM:
-            break;
-        case command_BIND_VERTEX_BUFFERS: {
-            object *Object = 0;
-            GetObject(C, Command->BindVertexBuffers.VertexArray, &Object);
-            VkBuffer Buffers[VERTEX_ATTRIB_CAPACITY] = {0};
-            VkDeviceSize Offsets[VERTEX_ATTRIB_CAPACITY] = {0};
-            u32 BufferCount = 0;
-            for(u32 J = 0; J < VERTEX_ATTRIB_CAPACITY; ++J) {
-                object *ObjectB = 0;
-                GetObject(C, Object->VertexArray.Attribs[J].Buffer, &ObjectB);
-                if(Object->VertexArray.Attribs[J].Enabled) {
-                    Buffers[BufferCount++] = ObjectB->Buffer.Buffer;
-                }
-            }
-            
-            vkCmdBindVertexBuffers(GraphicsCommandBuffer, 0, BufferCount, Buffers, Offsets);
-
+        case command_BIND_PIPELINE: {
+            pipeline_state_header *Header = GetPipelineState(C, Command->BindPipeline.PipelineIndex, pipeline_state_HEADER);
+            vkCmdBindPipeline(GraphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Header->Pipeline);
+        } break;
+        case command_BIND_VERTEX_BUFFER: {
+            vkCmdBindVertexBuffers(GraphicsCommandBuffer, Command->BindVertexBuffer.BindingIndex, 1, &Command->BindVertexBuffer.Buffer, &Command->BindVertexBuffer.Offset);
         } break;
         case command_DRAW: {
             vkCmdDraw(GraphicsCommandBuffer, Command->Draw.VertexCount, Command->Draw.InstanceCount, Command->Draw.VertexOffset, Command->Draw.InstanceOffset);
         } break;
+        default: {
+
+        } break;
         }
     }
-#endif
 
     vkCmdEndRenderPass(C->CommandBuffers[command_buffer_GRAPHICS]);
 
@@ -452,38 +222,23 @@ void cuglSwapBuffers(void) {
     VulkanCheckReturn(vkResetCommandBuffer(C->CommandBuffers[command_buffer_GRAPHICS], 0));
 
     vkDestroyFramebuffer(C->Device, Framebuffer, 0);
-#if 0
-    for(u32 I = 0; I < PipelineCount; ++I) {
-        vkDestroyPipeline(C->Device, PipelineStates[I].Pipeline, 0);
-        vkDestroyPipelineLayout(C->Device, PipelineStates[I].Layout, 0);
+
+    for(u32 I = 1; I < C->PipelineStates.Count; ++I) {
+        pipeline_state_header *Header = GetPipelineState(C, I, pipeline_state_HEADER);
+        vkDestroyPipelineLayout(C->Device, Header->Layout, 0);
+        vkDestroyPipeline(C->Device, Header->Pipeline, 0);
     }
-#endif
-    
     vkDestroyRenderPass(C->Device, RenderPass, 0);
 
     ArrayClear(&C->Commands, sizeof(command));
-    if(C->ActiveProgram) {
-        command Command = {
-            .Type = command_BIND_PROGRAM,
-            .BindProgram = {
-                .Program = C->ActiveProgram
-            }
-        };
-        PushCommand(C, Command);
-    }
-    if(C->BoundVao) {
-        command Command = {
-            .Type = command_BIND_VERTEX_BUFFERS,
-            .BindVertexBuffers = {
-                .VertexArray = C->BoundVao
-            }
-        };
-        PushCommand(C, Command);
-    }
+    C->LastPipelineIndex = 0;
+    C->IsPipelineSet = 0;
 }
 
 int cuglCreateContext(const context_create_params *Params) {
-    context *C = &GlobalContext;
+    const char *Name = "cuglCreateContext";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT, 1);
 
     C->Instance = VK_NULL_HANDLE;
     C->Surface = VK_NULL_HANDLE;
@@ -637,6 +392,7 @@ int cuglCreateContext(const context_create_params *Params) {
 
     // TODO error check
     CreatePipelineStates(C, &C->DeviceInfo.Properties.limits);
+    
 
     Result = 0;
     goto label_Exit;
@@ -666,7 +422,9 @@ label_Exit:
 
 void glActiveShaderProgram(GLuint pipeline, GLuint program) {}
 void glActiveTexture(GLenum texture) {
-    context *C = &GlobalContext;
+    const char *Name = "glActiveTexture";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
     if(texture < GL_TEXTURE0 || GL_TEXTURE0 + TEXTURE_SLOT_COUNT <= texture) {
         const char *Msg = "An INVALID_ENUM error is generated if an invalid texture is specified. texture is a symbolic constant of the form TEXTUREi, indicating that texture unit iis to be modified. Each TEXTUREiadheres to TEXTUREi=TEXTURE0 + i, where i is in the range zero to k-1, and kis the value of MAX_COMBINED_TEXTURE_IMAGE_UNITS.";
         GenerateErrorMsg(C, GL_INVALID_ENUM, GL_DEBUG_SOURCE_APPLICATION, Msg);
@@ -676,9 +434,12 @@ void glActiveTexture(GLenum texture) {
     C->ActiveTextureIndex = texture - GL_TEXTURE0;
 }
 void glAttachShader(GLuint program, GLuint shader) {
-    context *C = &GlobalContext;
+    const char *Name = "glAttachShader";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *ObjectP = 0, *ObjectS = 0;
-    if(HandledCheckProgramGet(C, program, &ObjectP) || HandledCheckShaderGet(C, shader, &ObjectS)) {
+    if(HandledCheckProgramGet(C, program, &ObjectP, Name) || HandledCheckShaderGet(C, shader, &ObjectS, Name)) {
         return;
     }
 
@@ -703,11 +464,14 @@ void glBeginQueryIndexed(GLenum target, GLuint index, GLuint id) {}
 void glBeginTransformFeedback(GLenum primitiveMode) {}
 void glBindAttribLocation(GLuint program, GLuint index, const GLchar * name) {}
 void glBindBuffer(GLenum target, GLuint buffer) {
-    context *C = &GlobalContext;
+    const char *Name = "glBindBuffer";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     buffer_target_info TargetInfo = {0};
     if(GetBufferTargetInfo(target, &TargetInfo)) {
         const char *Msg = "An INVALID_ENUM error is generated if target is not one of the targets listed in table 6.1.";
-        GenerateErrorMsg(&GlobalContext, GL_INVALID_ENUM, GL_DEBUG_SOURCE_APPLICATION, Msg);
+        GenerateErrorMsg(C, GL_INVALID_ENUM, GL_DEBUG_SOURCE_APPLICATION, Msg);
         return;
     }
 
@@ -727,10 +491,13 @@ void glBindBuffersRange(GLenum target, GLuint first, GLsizei count, const GLuint
 void glBindFragDataLocation(GLuint program, GLuint color, const GLchar * name) {}
 void glBindFragDataLocationIndexed(GLuint program, GLuint colorNumber, GLuint index, const GLchar * name) {}
 void glBindFramebuffer(GLenum target, GLuint framebuffer) {
-    context *C = &GlobalContext;
-    if(framebuffer != 0 && CheckObjectType(&GlobalContext, framebuffer, object_FRAMEBUFFER)) {
+    const char *Name = "glBindFramebuffer";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    if(framebuffer != 0 && CheckObjectType(C, framebuffer, object_FRAMEBUFFER)) {
         const char *Msg = "An INVALID_OPERATION error is generated if framebuffer is not zero or a name returned from a previous call to GenFramebuffers, or if such a name has since been deleted with DeleteFramebuffers.";
-        GenerateErrorMsg(&GlobalContext, GL_INVALID_OPERATION, GL_DEBUG_SOURCE_APPLICATION, Msg);
+        GenerateErrorMsg(C, GL_INVALID_OPERATION, GL_DEBUG_SOURCE_APPLICATION, Msg);
         return;
     }
 
@@ -745,7 +512,7 @@ void glBindFramebuffer(GLenum target, GLuint framebuffer) {
     }
     if(WasNone) {
         const char *Msg = "An INVALID_ENUM error is generated if target is not DRAW_FRAMEBUFFER, READ_FRAMEBUFFER, or FRAMEBUFFER.";
-        GenerateErrorMsg(&GlobalContext, GL_INVALID_ENUM, GL_DEBUG_SOURCE_APPLICATION, Msg);
+        GenerateErrorMsg(C, GL_INVALID_ENUM, GL_DEBUG_SOURCE_APPLICATION, Msg);
     }
 }
 void glBindImageTexture(GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum access, GLenum format) {}
@@ -755,7 +522,9 @@ void glBindRenderbuffer(GLenum target, GLuint renderbuffer) {}
 void glBindSampler(GLuint unit, GLuint sampler) {}
 void glBindSamplers(GLuint first, GLsizei count, const GLuint * samplers) {}
 void glBindTexture(GLenum target, GLuint texture) {
-    context *C = &GlobalContext;
+    const char *Name = "glBindTexture";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
     if(texture == 0) {
         return;
     }
@@ -789,7 +558,8 @@ void glBindTextures(GLuint first, GLsizei count, const GLuint * textures) {}
 void glBindTransformFeedback(GLenum target, GLuint id) {}
 void glBindVertexArray(GLuint array) {
     const char *Name = "glBindVertexArray";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     object *Object = 0;
     CheckGL(array != 0 && CheckObjectTypeGet(C, array, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_INVALID);
@@ -806,12 +576,12 @@ void glBindVertexArray(GLuint array) {
         return;
     }
 
-    pipeline_state_info AttributeInfo = C->PipelineStatesTypes[pipeline_state_VERTEX_INPUT_ATTRIBUTES];
-    pipeline_state_info BindingInfo = C->PipelineStatesTypes[pipeline_state_VERTEX_INPUT_ATTRIBUTES];
+    pipeline_state_info AttributeInfo = C->PipelineStateInfos[pipeline_state_VERTEX_INPUT_ATTRIBUTES];
+    pipeline_state_info BindingInfo = C->PipelineStateInfos[pipeline_state_VERTEX_INPUT_ATTRIBUTES];
     if(Object->VertexArray.InputAttributes == 0) {
         // NOTE(blackedout): Specs say to create the state here, not in glGen
-        Object->VertexArray.InputAttributes = calloc(AttributeInfo.InstanceCount, AttributeInfo.InstaceByteCount);
-        Object->VertexArray.InputBindings = calloc(BindingInfo.InstanceCount, BindingInfo.InstaceByteCount);
+        Object->VertexArray.InputAttributes = calloc(AttributeInfo.InstanceCount, sizeof(*Object->VertexArray.InputAttributes));
+        Object->VertexArray.InputBindings = calloc(BindingInfo.InstanceCount, sizeof(*Object->VertexArray.InputBindings));
         // TOOD(blackedout): Error handling
     }
 
@@ -820,7 +590,8 @@ void glBindVertexArray(GLuint array) {
 }
 void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {
     const char *Name = "glBindVertexBuffer";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_BIND_VERTEX_BUFFER_NONE_BOUND);
@@ -828,20 +599,25 @@ void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLs
 }
 void glBindVertexBuffers(GLuint first, GLsizei count, const GLuint * buffers, const GLintptr * offsets, const GLsizei * strides) {
     const char *Name = "glBindVertexBuffers";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     // TODO(blackedout):
     Assert(0);
 }
 void glBlendColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) {
-    context *C = &GlobalContext;
+    const char *Name = "glBlendColor";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
     C->Config.BlendState.blendConstants[0] = Clamp01(red);
     C->Config.BlendState.blendConstants[1] = Clamp01(green);
     C->Config.BlendState.blendConstants[2] = Clamp01(blue);
     C->Config.BlendState.blendConstants[3] = Clamp01(alpha);
 }
 void glBlendEquation(GLenum mode) {
-    context *C = &GlobalContext;
+    const char *Name = "glBlendEquation";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     VkBlendOp VulkanBlendOp;
     if(GetVulkanBlendOp(mode, &VulkanBlendOp)) {
@@ -854,7 +630,9 @@ void glBlendEquation(GLenum mode) {
     C->Config.BlendAttachmentState.alphaBlendOp = VulkanBlendOp;
 }
 void glBlendEquationSeparate(GLenum modeRGB, GLenum modeAlpha) {
-    context *C = &GlobalContext;
+    const char *Name = "glBlendEquationSeparate";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     VkBlendOp BlendOpColor, BlendOpAlpha;
     if(GetVulkanBlendOp(modeRGB, &BlendOpColor) || GetVulkanBlendOp(modeAlpha, &BlendOpAlpha)) {
@@ -869,7 +647,9 @@ void glBlendEquationSeparate(GLenum modeRGB, GLenum modeAlpha) {
 void glBlendEquationSeparatei(GLuint buf, GLenum modeRGB, GLenum modeAlpha) {}
 void glBlendEquationi(GLuint buf, GLenum mode) {}
 void glBlendFunc(GLenum sfactor, GLenum dfactor) {
-    context *C = &GlobalContext;
+    const char *Name = "glBlendFunc";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     VkBlendFactor FactorSrc, FactorDst;
     if(GetVulkanBlendFactor(sfactor, &FactorSrc) || GetVulkanBlendFactor(dfactor, &FactorDst)) {
@@ -884,7 +664,9 @@ void glBlendFunc(GLenum sfactor, GLenum dfactor) {
     C->Config.BlendAttachmentState.dstAlphaBlendFactor = FactorDst;
 }
 void glBlendFuncSeparate(GLenum sfactorRGB, GLenum dfactorRGB, GLenum sfactorAlpha, GLenum dfactorAlpha) {
-    context *C = &GlobalContext;
+    const char *Name = "glBlendFuncSeparate";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     VkBlendFactor FactorSrcColor, FactorSrcAlpha, FactorDstColor, FactorDstAlpha;
     if(GetVulkanBlendFactor(sfactorRGB, &FactorSrcColor) || GetVulkanBlendFactor(dfactorRGB, &FactorDstColor) ||
@@ -904,7 +686,10 @@ void glBlendFunci(GLuint buf, GLenum src, GLenum dst) {}
 void glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter) {}
 void glBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuffer, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter) {}
 void glBufferData(GLenum target, GLsizeiptr size, const void * data, GLenum usage) {
-    context *C = &GlobalContext;
+    const char *Name = "glBufferData";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     buffer_target_info TargetInfo = {0};
     if(GetBufferTargetInfo(target, &TargetInfo)) {
         const char *Msg = "An INVALID_ENUM error is generated by BufferData if target is not one of the targets listed in table 6.1.";
@@ -1045,7 +830,10 @@ GLenum glCheckFramebufferStatus(GLenum target) {return GL_FRAMEBUFFER_COMPLETE;}
 GLenum glCheckNamedFramebufferStatus(GLuint framebuffer, GLenum target) {return GL_FRAMEBUFFER_COMPLETE;}
 void glClampColor(GLenum target, GLenum clamp) {}
 void glClear(GLbitfield mask) {
-    context *C = &GlobalContext;
+    const char *Name = "glClear";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object;
     GLuint H = C->BoundFramebuffers[framebuffer_WRITE];
     if(CheckObjectTypeGet(C, H, object_FRAMEBUFFER, &Object)) {
@@ -1106,7 +894,10 @@ void glClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat * value) {}
 void glClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint * value) {}
 void glClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint * value) {}
 void glClearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) {
-    context *C = &GlobalContext;
+    const char *Name = "glClearColor";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+    
     pipeline_state_clear_color ClearColor = {
         .R = red, .G = green, .B = blue, .A = alpha
     };
@@ -1114,12 +905,18 @@ void glClearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) {
     *State = ClearColor;
 }
 void glClearDepth(GLdouble depth) {
-    context *C = &GlobalContext;
+    const char *Name = "glClearDepth";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     pipeline_state_clear_depth *State = GetCurrentPipelineState(C, pipeline_state_CLEAR_DEPTH);
     *State = (GLfloat)depth;
 }
 void glClearDepthf(GLfloat d) {
-    context *C = &GlobalContext;
+    const char *Name = "glClearDepthf";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     pipeline_state_clear_depth *State = GetCurrentPipelineState(C, pipeline_state_CLEAR_DEPTH);
     *State = d;
 }
@@ -1130,7 +927,10 @@ void glClearNamedFramebufferfv(GLuint framebuffer, GLenum buffer, GLint drawbuff
 void glClearNamedFramebufferiv(GLuint framebuffer, GLenum buffer, GLint drawbuffer, const GLint * value) {}
 void glClearNamedFramebufferuiv(GLuint framebuffer, GLenum buffer, GLint drawbuffer, const GLuint * value) {}
 void glClearStencil(GLint s) {
-    context *C = &GlobalContext;
+    const char *Name = "glClearStencil";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     pipeline_state_clear_stencil *State = GetCurrentPipelineState(C, pipeline_state_CLEAR_STENCIL);
     *State = s;
 }
@@ -1141,9 +941,11 @@ void glClipControl(GLenum origin, GLenum depth) {}
 void glColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) {}
 void glColorMaski(GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a) {}
 void glCompileShader(GLuint shader) {
-    context *C = &GlobalContext;
+    const char *Name = "glCompileShader";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
     object *Object = 0;
-    if(HandledCheckShaderGet(C, shader, &Object)) {
+    if(HandledCheckShaderGet(C, shader, &Object, Name)) {
         return;
     }
 
@@ -1192,8 +994,11 @@ void glCopyTextureSubImage3D(GLuint texture, GLint level, GLint xoffset, GLint y
 void glCreateBuffers(GLsizei n, GLuint * buffers) {}
 void glCreateFramebuffers(GLsizei n, GLuint * framebuffers) {}
 GLuint glCreateProgram(void) {
-    context *C = &GlobalContext;
+    const char *Name = "glCreateProgram";
     GLuint Result = 0;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT, Result);
+
     object Template = {0};
     Template.Type = object_PROGRAM;
     if(CreateObjects(C, Template, 1, &Result)) {
@@ -1217,9 +1022,11 @@ void glCreateQueries(GLenum target, GLsizei n, GLuint * ids) {}
 void glCreateRenderbuffers(GLsizei n, GLuint * renderbuffers) {}
 void glCreateSamplers(GLsizei n, GLuint * samplers) {}
 GLuint glCreateShader(GLenum type) {
-    context *C = &GlobalContext;
-
+    const char *Name = "glCreateShader";
     GLuint Result = 0;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT, Result);
+    
     shader_type_info TypeInfo = {0};
     if(GetShaderTypeInfo(type, &TypeInfo)) {
         const char *Msg = "glCreateShader: An INVALID_ENUM error is generated and zero is returned if type is not one of the values in table 7.1.";
@@ -1239,7 +1046,9 @@ void glCreateTextures(GLenum target, GLsizei n, GLuint * textures) {}
 void glCreateTransformFeedbacks(GLsizei n, GLuint * ids) {}
 void glCreateVertexArrays(GLsizei n, GLuint * arrays) {}
 void glCullFace(GLenum mode) {
-    context *C = &GlobalContext;
+    const char *Name = "glCullFace";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
 #define MakeCase(K, V) case (K): C->Config.RasterState.cullMode = (V); break
     switch(mode) {
@@ -1254,25 +1063,38 @@ void glCullFace(GLenum mode) {
 #undef MakeCase
 }
 void glDebugMessageCallback(GLDEBUGPROC callback, const void * userParam) {
-    (&GlobalContext)->DebugCallback = callback;
-    (&GlobalContext)->DebugCallbackUser = userParam;
+    const char *Name = "glDebugMessageCallback";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    C->DebugCallback = callback;
+    C->DebugCallbackUser = userParam;
 }
 void glDebugMessageControl(GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint * ids, GLboolean enabled) {}
 void glDebugMessageInsert(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar * buf) {}
 void glDeleteBuffers(GLsizei n, const GLuint * buffers) {
-    DeleteObjectsSizei(&GlobalContext, n, buffers, object_BUFFER);
+    const char *Name = "glDeleteBuffers";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+    DeleteObjectsSizei(C, n, buffers, object_BUFFER);
 }
 void glDeleteFramebuffers(GLsizei n, const GLuint * framebuffers) {
-    DeleteObjectsSizei(&GlobalContext, n, framebuffers, object_FRAMEBUFFER);
+    const char *Name = "glDeleteFramebuffers";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+    DeleteObjectsSizei(C, n, framebuffers, object_FRAMEBUFFER);
 }
 void glDeleteProgram(GLuint program) {
-    context *C = &GlobalContext;
+    const char *Name = "glDeleteProgram";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+    
     if(program == 0) {
         return;
     }
 
     object *Object = 0;
-    if(HandledCheckProgramGet(C, program, &Object)) {
+    if(HandledCheckProgramGet(C, program, &Object, Name)) {
         return;
     }
 
@@ -1283,20 +1105,31 @@ void glDeleteProgram(GLuint program) {
 }
 void glDeleteProgramPipelines(GLsizei n, const GLuint * pipelines) {}
 void glDeleteQueries(GLsizei n, const GLuint * ids) {
-    DeleteObjectsSizei(&GlobalContext, n, ids, object_QUERY);
+    const char *Name = "glDeleteQueries";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    DeleteObjectsSizei(C, n, ids, object_QUERY);
 }
 void glDeleteRenderbuffers(GLsizei n, const GLuint * renderbuffers) {
-    DeleteObjectsSizei(&GlobalContext, n, renderbuffers, object_RENDERBUFFER);
+    const char *Name = "glDeleteRenderbuffers";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    DeleteObjectsSizei(C, n, renderbuffers, object_RENDERBUFFER);
 }
 void glDeleteSamplers(GLsizei count, const GLuint * samplers) {}
 void glDeleteShader(GLuint shader) {
-    context *C = &GlobalContext;
+    const char *Name = "glDeleteShader";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+    
     if(shader == 0) {
         return;
     }
 
     object *Object = 0;
-    if(HandledCheckShaderGet(C, shader, &Object)) {
+    if(HandledCheckShaderGet(C, shader, &Object, Name)) {
         return;
     }
 
@@ -1308,23 +1141,34 @@ void glDeleteShader(GLuint shader) {
     }
 }
 void glDeleteSync(GLsync sync) {
+    const char *Name = "glDeleteSync";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
     // TODO(blackedout): This pointer cast is potentially dangerous
-    DeleteObjects(&GlobalContext, 1, (GLuint *)&sync, object_SYNC);
+    DeleteObjects(C, 1, (GLuint *)&sync, object_SYNC);
 }
 void glDeleteTextures(GLsizei n, const GLuint * textures) {
-    DeleteObjectsSizei(&GlobalContext, n, textures, object_TEXTURE);
+    const char *Name = "glDeleteTextures";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    DeleteObjectsSizei(C, n, textures, object_TEXTURE);
 }
 void glDeleteTransformFeedbacks(GLsizei n, const GLuint * ids) {}
 void glDeleteVertexArrays(GLsizei n, const GLuint * arrays) {
     const char *Name = "glDeleteVertexArrays";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+    
     CheckGL(n < 0, gl_error_N_NEGATIVE);
     // TODO(blackedout): Silently ignore unused handles in arrays
     DeleteObjectsSizei(C, n, arrays, object_VERTEX_ARRAY);
     // TODO(blackedout): Revert binding to zero if is bound
 }
 void glDepthFunc(GLenum func) {
-    context *C = &GlobalContext;
+    const char *Name = "glDepthFunc";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
 #define MakeCase(K, V) case (K): C->Config.DepthStencilState.depthCompareOp = (V); break
     switch(func) {
@@ -1344,24 +1188,75 @@ void glDepthFunc(GLenum func) {
 #undef MakeCase
 }
 void glDepthMask(GLboolean flag) {}
-void glDepthRange(GLdouble n, GLdouble f) {}
-void glDepthRangeArrayv(GLuint first, GLsizei count, const GLdouble * v) {}
-void glDepthRangeIndexed(GLuint index, GLdouble n, GLdouble f) {}
-void glDepthRangef(GLfloat n, GLfloat f) {}
+void glDepthRange(GLdouble n, GLdouble f) {
+    const char *Name = "glDepthRange";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
+    for(u32 I = 0; I < C->PipelineStateInfos[pipeline_state_VIEWPORT].InstanceCount; ++I) {
+        State[I].minDepth = Clamp01((float)n);
+        State[I].maxDepth = Clamp01((float)f);
+    }
+}
+void glDepthRangeArrayv(GLuint first, GLsizei count, const GLdouble * v) {
+    const char *Name = "glDepthRangeArrayv";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    CheckGL(count < 0, gl_error_VIEWPORT_COUNT_NEGATIVE);
+    CheckGL(first + count > C->PipelineStateInfos[pipeline_state_VIEWPORT].InstanceCount, gl_error_VIEWPORT_INDEX);
+
+    pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
+    for(u32 I = 0; I < count; ++I) {
+        State[first + I].minDepth = Clamp01((float)v[2*I + 0]);
+        State[first + I].maxDepth = Clamp01((float)v[2*I + 1]);
+    }
+}
+void glDepthRangeIndexed(GLuint index, GLdouble n, GLdouble f) {
+    const char *Name = "glDepthRangeIndexed";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    CheckGL(index >= C->PipelineStateInfos[pipeline_state_VIEWPORT].InstanceCount, gl_error_VIEWPORT_INDEX);
+
+    pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
+    State[index].minDepth = Clamp01((float)n);
+    State[index].maxDepth = Clamp01((float)f);
+}
+void glDepthRangef(GLfloat n, GLfloat f) {
+    const char *Name = "glDepthRangef";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
+    for(u32 I = 0; I < C->PipelineStateInfos[pipeline_state_VIEWPORT].InstanceCount; ++I) {
+        State[I].minDepth = Clamp01((float)n);
+        State[I].maxDepth = Clamp01((float)f);
+    }
+}
 void glDetachShader(GLuint program, GLuint shader) {}
 void glDisable(GLenum cap) {
-    HandledCheckCapSet(&GlobalContext, cap, 0);
+    const char *Name = "glDisable";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    HandledCheckCapSet(C, cap, 0);
 }
 void glDisableVertexArrayAttrib(GLuint vaobj, GLuint index) {
     const char *Name = "glDisableVertexArrayAttrib";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_XABLE_VERTEX_ARRAY_ATTRIB_INVALID);
     SetVertexInputAttributeEnabled(C, Object, C->BoundVao == vaobj, index, 0, Name);
 }
 void glDisableVertexAttribArray(GLuint index) {
     const char *Name = "glDisableVertexAttribArray";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_XABLE_VERTEX_ATTRIB_ARRAY_NONE_BOUND);
     SetVertexInputAttributeEnabled(C, Object, 1, index, 0, Name);
@@ -1370,36 +1265,34 @@ void glDisablei(GLenum target, GLuint index) {}
 void glDispatchCompute(GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z) {}
 void glDispatchComputeIndirect(GLintptr indirect) {}
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
-    context *C = &GlobalContext;
+    const char *Name = "glDrawArrays";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
-    if(first < 0) {
-        const char *Msg = "Specifying first < 0 results in undefined behavior. Generating an INVALID_VALUE error is recommended in this case.";
-        GenerateErrorMsg(C, GL_INVALID_VALUE, GL_DEBUG_SOURCE_APPLICATION, Msg);
-        return;
-    }
-
-    if(count < 0) {
-        const char *Msg = "An INVALID_VALUE error is generated if count is negative.";
-        GenerateErrorMsg(C, GL_INVALID_VALUE, GL_DEBUG_SOURCE_APPLICATION, Msg);
-        return;
-    }
+    CheckGL(first < 0, gl_error_DRAW_FIRST_NEGATIVE);
+    CheckGL(count < 0, gl_error_DRAW_COUNT_NEGATIVE);
 
     primitive_info PrimitiveInfo = {0};
-    if(GetPrimitiveInfo(mode, &PrimitiveInfo)) {
-        const char *Msg = "An INVALID_ENUM error is generated if mode is not one of the primitive types defined in section 10.1.";
-        GenerateErrorMsg(C, GL_INVALID_ENUM, GL_DEBUG_SOURCE_APPLICATION, Msg);
-        return;
-    }
+    CheckGL(GetPrimitiveInfo(mode, &PrimitiveInfo), gl_error_DRAW_MODE);
 
     if(mode == GL_LINE_LOOP) {
         // TODO(blackedout): Handle special case
     }
 
-    if(C->IsPrimitiveTopologySet) {
-        // NOTE(blackedout): Flush
-    }
-    C->IsPrimitiveTopologySet = 1;
-    C->CurrentPrimitiveTopoloy = PrimitiveInfo.VulkanPrimitve;
+    pipeline_state_primitive_type *State = GetCurrentPipelineState(C, pipeline_state_PRIMITIVE_TYPE);
+    State->Type = mode;
+    
+    pipeline_state_type Types[] = {
+        pipeline_state_VIEWPORT,
+        pipeline_state_SCISSOR,
+        pipeline_state_FRAMEBUFFER,
+        pipeline_state_DRAW_BUFFERS,
+        pipeline_state_VERTEX_INPUT_ATTRIBUTES,
+        pipeline_state_VERTEX_INPUT_BINDINGS,
+        pipeline_state_PROGRAM,
+        pipeline_state_PRIMITIVE_TYPE,
+    };
+    CheckGL(UseCurrentPipelineState(C, ArrayCount(Types), Types), gl_error_OUT_OF_MEMORY);
 
     command Command = {
         .Type = command_DRAW,
@@ -1410,7 +1303,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
             .InstanceOffset = 0,
         },
     };
-    PushCommand(C, Command);
+    CheckGL(PushCommand(C, Command), gl_error_OUT_OF_MEMORY);
 }
 void glDrawArraysIndirect(GLenum mode, const void * indirect) {}
 void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instancecount) {}
@@ -1431,19 +1324,26 @@ void glDrawTransformFeedbackInstanced(GLenum mode, GLuint id, GLsizei instanceco
 void glDrawTransformFeedbackStream(GLenum mode, GLuint id, GLuint stream) {}
 void glDrawTransformFeedbackStreamInstanced(GLenum mode, GLuint id, GLuint stream, GLsizei instancecount) {}
 void glEnable(GLenum cap) {
-    context *C = &GlobalContext;
-    HandledCheckCapSet(&GlobalContext, cap, 1);
+    const char *Name = "glEnable";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    HandledCheckCapSet(C, cap, 1);
 }
 void glEnableVertexArrayAttrib(GLuint vaobj, GLuint index) {
     const char *Name = "glEnableVertexArrayAttrib";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_XABLE_VERTEX_ARRAY_ATTRIB_INVALID);
     SetVertexInputAttributeEnabled(C, Object, C->BoundVao == vaobj, index, 1, Name);
 }
 void glEnableVertexAttribArray(GLuint index) {
     const char *Name = "glEnableVertexAttribArray";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_XABLE_VERTEX_ATTRIB_ARRAY_NONE_BOUND);
     SetVertexInputAttributeEnabled(C, Object, 1, index, 1, Name);
@@ -1466,7 +1366,9 @@ void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, 
 void glFramebufferTexture3D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLint zoffset) {}
 void glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer) {}
 void glFrontFace(GLenum mode) {
-    context *C = &GlobalContext;
+    const char *Name = "glFrontFace";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
 #define MakeCase(K, V) case (K): C->Config.RasterState.frontFace = (V); break
     switch(mode) {
@@ -1480,32 +1382,59 @@ void glFrontFace(GLenum mode) {
 #undef MakeCase
 }
 void glGenBuffers(GLsizei n, GLuint * buffers) {
+    const char *Name = "glGenBuffers";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object Template = {0};
     Template.Type = object_BUFFER;
-    CreateObjectsSizei(&GlobalContext, Template, n, buffers);
+    CreateObjectsSizei(C, Template, n, buffers);
 }
 void glGenFramebuffers(GLsizei n, GLuint * framebuffers) {
+    const char *Name = "glGenFramebuffers";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object Template = {0};
     Template.Type = object_FRAMEBUFFER;
-    CreateObjectsSizei(&GlobalContext, Template, n, framebuffers);
+    CreateObjectsSizei(C, Template, n, framebuffers);
 }
-void glGenProgramPipelines(GLsizei n, GLuint * pipelines) {}
+void glGenProgramPipelines(GLsizei n, GLuint * pipelines) {
+    const char *Name = "glGenProgramPipelines";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    CheckGL(n < 0, gl_error_N_NEGATIVE);
+    object Template = {0};
+    Template.Type = object_PROGRAM_PIPELINE;
+    CreateObjects(C, Template, n, pipelines);
+}
 void glGenQueries(GLsizei n, GLuint * ids) {
+    const char *Name = "glGenQueries";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object Template = {0};
     Template.Type = object_QUERY;
-    CreateObjectsSizei(&GlobalContext, Template, n, ids);
+    CreateObjectsSizei(C, Template, n, ids);
 }
 void glGenRenderbuffers(GLsizei n, GLuint * renderbuffers) {}
 void glGenSamplers(GLsizei count, GLuint * samplers) {}
 void glGenTextures(GLsizei n, GLuint * textures) {
+    const char *Name = "glGenTextures";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object Template = {0};
     Template.Type = object_TEXTURE;
-    CreateObjectsSizei(&GlobalContext, Template, n, textures);
+    CreateObjectsSizei(C, Template, n, textures);
 }
 void glGenTransformFeedbacks(GLsizei n, GLuint * ids) {}
 void glGenVertexArrays(GLsizei n, GLuint * arrays) {
-    const char *Name = "";
-    context *C = &GlobalContext;
+    const char *Name = "glGenVertexArrays";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     CheckGL(n < 0, gl_error_N_NEGATIVE);
 
     object Template = {0};
@@ -1540,7 +1469,11 @@ GLuint glGetDebugMessageLog(GLuint count, GLsizei bufSize, GLenum * sources, GLe
 void glGetDoublei_v(GLenum target, GLuint index, GLdouble * data) {}
 void glGetDoublev(GLenum pname, GLdouble * data) {}
 GLenum glGetError(void) {
-    context *C = &GlobalContext;
+    const char *Name = "glGetError";
+    context *C = 0;
+    // TODO(blackedout): What to do here?
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT, GL_INVALID_OPERATION);
+
     GLenum Result = C->ErrorFlag;
     C->ErrorFlag = GL_NO_ERROR;
     return Result;
@@ -1577,9 +1510,12 @@ void glGetObjectPtrLabel(const void * ptr, GLsizei bufSize, GLsizei * length, GL
 void glGetPointerv(GLenum pname, void ** params) {}
 void glGetProgramBinary(GLuint program, GLsizei bufSize, GLsizei * length, GLenum * binaryFormat, void * binary) {}
 void glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei * length, GLchar * infoLog) {
-    context *C = &GlobalContext;
+    const char *Name = "glGetProgramInfoLog";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
-    if(HandledCheckProgramGet(C, program, &Object)) {
+    if(HandledCheckProgramGet(C, program, &Object, Name)) {
         return;
     }
 
@@ -1607,9 +1543,12 @@ void glGetProgramResourceName(GLuint program, GLenum programInterface, GLuint in
 void glGetProgramResourceiv(GLuint program, GLenum programInterface, GLuint index, GLsizei propCount, const GLenum * props, GLsizei count, GLsizei * length, GLint * params) {}
 void glGetProgramStageiv(GLuint program, GLenum shadertype, GLenum pname, GLint * values) {}
 void glGetProgramiv(GLuint program, GLenum pname, GLint * params) {
-    context *C = &GlobalContext;
+    const char *Name = "glGetProgramiv";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
-    if(HandledCheckProgramGet(C, program, &Object)) {
+    if(HandledCheckProgramGet(C, program, &Object, Name)) {
         return;
     }
 
@@ -1652,9 +1591,12 @@ void glGetSamplerParameterIuiv(GLuint sampler, GLenum pname, GLuint * params) {}
 void glGetSamplerParameterfv(GLuint sampler, GLenum pname, GLfloat * params) {}
 void glGetSamplerParameteriv(GLuint sampler, GLenum pname, GLint * params) {}
 void glGetShaderInfoLog(GLuint shader, GLsizei bufSize, GLsizei * length, GLchar * infoLog) {
-    context *C = &GlobalContext;
+    const char *Name = "glGetShaderInfoLog";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
-    if(HandledCheckShaderGet(C, shader, &Object)) {
+    if(HandledCheckShaderGet(C, shader, &Object, Name)) {
         return;
     }
 
@@ -1675,9 +1617,12 @@ void glGetShaderInfoLog(GLuint shader, GLsizei bufSize, GLsizei * length, GLchar
 void glGetShaderPrecisionFormat(GLenum shadertype, GLenum precisiontype, GLint * range, GLint * precision) {}
 void glGetShaderSource(GLuint shader, GLsizei bufSize, GLsizei * length, GLchar * source) {}
 void glGetShaderiv(GLuint shader, GLenum pname, GLint * params) {
-    context *C = &GlobalContext;
+    const char *Name = "glGetShaderiv";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
-    if(HandledCheckShaderGet(C, shader, &Object)) {
+    if(HandledCheckShaderGet(C, shader, &Object, Name)) {
         return;
     }
 
@@ -1742,13 +1687,16 @@ void glGetTransformFeedbackiv(GLuint xfb, GLenum pname, GLint * param) {}
 GLuint glGetUniformBlockIndex(GLuint program, const GLchar * uniformBlockName) {return 1;}
 void glGetUniformIndices(GLuint program, GLsizei uniformCount, const GLchar *const* uniformNames, GLuint * uniformIndices) {}
 GLint glGetUniformLocation(GLuint program, const GLchar * name) {
-    context *C = &GlobalContext;
+    const char *Name = "glGetUniformLocation";
+    GLint Result = -1;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT, Result);
+
     object *Object = 0;
-    if(HandledCheckProgramGet(C, program, &Object)) {
-        return -1;
+    if(HandledCheckProgramGet(C, program, &Object, Name)) {
+        return Result;
     }
 
-    GLint Result = -1;
     GlslangProgramGetLocation(Object->Program.GlslangProgram, name, &Result);
     return Result;
 }
@@ -1782,31 +1730,61 @@ void glInvalidateNamedFramebufferSubData(GLuint framebuffer, GLsizei numAttachme
 void glInvalidateSubFramebuffer(GLenum target, GLsizei numAttachments, const GLenum * attachments, GLint x, GLint y, GLsizei width, GLsizei height) {}
 void glInvalidateTexImage(GLuint texture, GLint level) {}
 void glInvalidateTexSubImage(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth) {}
-GLboolean glIsBuffer(GLuint buffer) {return GL_TRUE;}
+GLboolean glIsBuffer(GLuint buffer) {
+    return IsObjectType(buffer, object_BUFFER, "glIsBuffer");
+}
 GLboolean glIsEnabled(GLenum cap) {return GL_TRUE;}
 GLboolean glIsEnabledi(GLenum target, GLuint index) {return GL_TRUE;}
-GLboolean glIsFramebuffer(GLuint framebuffer) {return GL_TRUE;}
-GLboolean glIsProgram(GLuint program) {return GL_TRUE;}
-GLboolean glIsProgramPipeline(GLuint pipeline) {return GL_TRUE;}
-GLboolean glIsQuery(GLuint id) {return GL_TRUE;}
-GLboolean glIsRenderbuffer(GLuint renderbuffer) {return GL_TRUE;}
-GLboolean glIsSampler(GLuint sampler) {return GL_TRUE;}
-GLboolean glIsShader(GLuint shader) {return GL_TRUE;}
-GLboolean glIsSync(GLsync sync) {return GL_TRUE;}
-GLboolean glIsTexture(GLuint texture) {return GL_TRUE;}
-GLboolean glIsTransformFeedback(GLuint id) {return GL_TRUE;}
-GLboolean glIsVertexArray(GLuint array) {return GL_TRUE;}
+GLboolean glIsFramebuffer(GLuint framebuffer) {
+    return IsObjectType(framebuffer, object_FRAMEBUFFER, "glIsFramebuffer");
+}
+GLboolean glIsProgram(GLuint program) {
+    return IsObjectType(program, object_PROGRAM, "glIsProgram");
+}
+GLboolean glIsProgramPipeline(GLuint pipeline) {
+    return IsObjectType(pipeline, object_PROGRAM_PIPELINE, "glIsProgramPipeline");
+}
+GLboolean glIsQuery(GLuint id) {
+    return IsObjectType(id, object_QUERY, "glIsQuery");
+}
+GLboolean glIsRenderbuffer(GLuint renderbuffer) {
+    return IsObjectType(renderbuffer, object_RENDERBUFFER, "glIsRenderbuffer");
+}
+GLboolean glIsSampler(GLuint sampler) {
+    return IsObjectType(sampler, object_SAMPLER, "glIsSampler");
+}
+GLboolean glIsShader(GLuint shader) {
+    return IsObjectType(shader, object_SHADER, "glIsShader");
+}
+GLboolean glIsSync(GLsync sync) {
+    // TODO(blackedout): Cast
+    return IsObjectType((GLuint)sync, object_SYNC, "glIsSync");
+}
+GLboolean glIsTexture(GLuint texture) {
+    return IsObjectType(texture, object_TEXTURE, "glIsTexture");
+}
+GLboolean glIsTransformFeedback(GLuint id) {
+    return IsObjectType(id, object_TRANSFORM_FEEDBACK, "glIsTransformFeedback");
+}
+GLboolean glIsVertexArray(GLuint array) {
+    return IsObjectType(array, object_VERTEX_ARRAY, "glIsVertexArray");
+}
 void glLineWidth(GLfloat width) {
     const char *Name = "glLineWidth";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     CheckGL(width <= (GLfloat)0.0, gl_error_LINE_WIDTH_LE_ZERO);
 
     C->Config.RasterState.lineWidth = (float)width;
 }
 void glLinkProgram(GLuint program) {
-    context *C = &GlobalContext;
+    const char *Name = "glLinkProgram";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
-    if(HandledCheckProgramGet(C, program, &Object)) {
+    if(HandledCheckProgramGet(C, program, &Object, Name)) {
         return;
     }
     
@@ -1883,7 +1861,10 @@ void glPointParameteri(GLenum pname, GLint param) {}
 void glPointParameteriv(GLenum pname, const GLint * params) {}
 void glPointSize(GLfloat size) {}
 void glPolygonMode(GLenum face, GLenum mode) {
-    context *C = &GlobalContext;
+    const char *Name = "glPolygonMode";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     if(face != GL_FRONT_AND_BACK) {
         const char *Msg = "glPolygonMode: Separate polygon draw mode - PolygonMode face values of FRONT and BACK; polygons are always drawn in the same mode, no matter which face is being rasterized.";
         GenerateErrorMsg(C, GL_INVALID_ENUM, GL_DEBUG_SOURCE_APPLICATION, Msg);
@@ -1902,7 +1883,10 @@ void glPolygonMode(GLenum face, GLenum mode) {
 #undef MakeCase
 }
 void glPolygonOffset(GLfloat factor, GLfloat units) {
-    context *C = &GlobalContext;
+    const char *Name = "glPolygonOffset";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     C->Config.RasterState.depthBiasConstantFactor = units;
     C->Config.RasterState.depthBiasSlopeFactor = factor;
 }
@@ -1981,64 +1965,74 @@ void glSamplerParameteri(GLuint sampler, GLenum pname, GLint param) {}
 void glSamplerParameteriv(GLuint sampler, GLenum pname, const GLint * param) {}
 void glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
     const char *Name = "glScissor";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     CheckGL(width < 0 || height < 0, gl_error_SCISSOR_WIDTH_HEIGHT_NEGATIVE);
 
-    pipeline_state_scissor Scissor = {
-        .X = x, .Y = y, .W = width, .H = height
-    };
     pipeline_state_scissor *State = GetCurrentPipelineState(C, pipeline_state_SCISSOR);
-    for(u32 I = 0; I < C->PipelineStatesTypes[pipeline_state_SCISSOR].InstanceCount; ++I) {
-        State[I] = Scissor;
+    for(u32 I = 0; I < C->PipelineStateInfos[pipeline_state_SCISSOR].InstanceCount; ++I) {
+        State[I].offset.x = (int32_t)x;
+        State[I].offset.y = (int32_t)y;
+        State[I].extent.width = (uint32_t)width;
+        State[I].extent.height = (uint32_t)height;
     }
 }
 void glScissorArrayv(GLuint first, GLsizei count, const GLint * v) {
     const char *Name = "glScissorArrayv";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     for(u32 I = 0; I < count; ++I) {
         CheckGL(v[4*I + 2] < 0 || v[4*I + 3] < 0, gl_error_SCISSOR_WIDTH_HEIGHT_NEGATIVE);
     }
     CheckGL(count < 0, gl_error_SCISSOR_COUNT_NEGATIVE);
-    CheckGL(first + count > C->PipelineStatesTypes[pipeline_state_SCISSOR].InstanceCount, gl_error_SCISSOR_INDEX);
+    CheckGL(first + count > C->PipelineStateInfos[pipeline_state_SCISSOR].InstanceCount, gl_error_SCISSOR_INDEX);
 
     pipeline_state_scissor *State = GetCurrentPipelineState(C, pipeline_state_SCISSOR);
     for(u32 I = 0; I < count; ++I) {
-        pipeline_state_scissor Scissor = {
-            .X = v[4*I + 0], .Y = v[4*I + 1], .W = v[4*I + 2], .H = v[4*I + 3]
-        };
-        State[first + I] = Scissor;
+        State[first + I].offset.x = (int32_t)v[4*I + 0];
+        State[first + I].offset.y = (int32_t)v[4*I + 1];
+        State[first + I].extent.width = (uint32_t)v[4*I + 2];
+        State[first + I].extent.height = (uint32_t)v[4*I + 3];
     }
 }
 void glScissorIndexed(GLuint index, GLint left, GLint bottom, GLsizei width, GLsizei height) {
     const char *Name = "glScissorIndexed";
-    context *C = &GlobalContext;
-    CheckGL(width < 0 || height < 0, gl_error_SCISSOR_WIDTH_HEIGHT_NEGATIVE);
-    CheckGL(index >= C->PipelineStatesTypes[pipeline_state_SCISSOR].InstanceCount, gl_error_SCISSOR_INDEX);
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
-    pipeline_state_scissor Scissor = {
-        .X = left, .Y = bottom, .W = width, .H = height
-    };
+    CheckGL(width < 0 || height < 0, gl_error_SCISSOR_WIDTH_HEIGHT_NEGATIVE);
+    CheckGL(index >= C->PipelineStateInfos[pipeline_state_SCISSOR].InstanceCount, gl_error_SCISSOR_INDEX);
+
     pipeline_state_scissor *State = GetCurrentPipelineState(C, pipeline_state_SCISSOR);
-    State[index] = Scissor;
+    State[index].offset.x = (int32_t)left;
+    State[index].offset.y = (int32_t)bottom;
+    State[index].extent.width = (uint32_t)width;
+    State[index].extent.height = (uint32_t)height;
 }
 void glScissorIndexedv(GLuint index, const GLint * v) {
     const char *Name = "glScissorIndexed";
-    context *C = &GlobalContext;
-    CheckGL(v[2] < 0 || v[3] < 0, gl_error_SCISSOR_WIDTH_HEIGHT_NEGATIVE);
-    CheckGL(index >= C->PipelineStatesTypes[pipeline_state_SCISSOR].InstanceCount, gl_error_SCISSOR_INDEX);
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
-    pipeline_state_scissor Scissor = {
-        .X = v[0], .Y = v[1], .W = v[2], .H = v[3]
-    };
+    CheckGL(v[2] < 0 || v[3] < 0, gl_error_SCISSOR_WIDTH_HEIGHT_NEGATIVE);
+    CheckGL(index >= C->PipelineStateInfos[pipeline_state_SCISSOR].InstanceCount, gl_error_SCISSOR_INDEX);
+
     pipeline_state_scissor *State = GetCurrentPipelineState(C, pipeline_state_SCISSOR);
-    State[index] = Scissor;
+    State[index].offset.x = (int32_t)v[0];
+    State[index].offset.y = (int32_t)v[1];
+    State[index].extent.width = (uint32_t)v[2];
+    State[index].extent.height = (uint32_t)v[3];
 }
 void glShaderBinary(GLsizei count, const GLuint * shaders, GLenum binaryFormat, const void * binary, GLsizei length) {}
 void glShaderSource(GLuint shader, GLsizei count, const GLchar *const* string, const GLint * length) {
-    context *C = &GlobalContext;
+    const char *Name = "glShaderSource";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     object *Object = 0;
-    if(HandledCheckShaderGet(C, shader, &Object)) {
+    if(HandledCheckShaderGet(C, shader, &Object, Name)) {
         return;
     }
 
@@ -2078,7 +2072,10 @@ void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) {}
 void glTexBufferRange(GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size) {}
 void glTexImage1D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLint border, GLenum format, GLenum type, const void * pixels) {}
 void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void * pixels) {
-    context *C = &GlobalContext;
+    const char *Name = "glTexImage2D";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     if(level < 0) {
         const char *Msg = "An INVALID_VALUE error is generated if level is negative.";
         GenerateErrorMsg(C, GL_INVALID_VALUE, GL_DEBUG_SOURCE_APPLICATION, Msg);
@@ -2221,22 +2218,19 @@ void glUniformSubroutinesuiv(GLenum shadertype, GLsizei count, const GLuint * in
 GLboolean glUnmapBuffer(GLenum target) {return GL_TRUE;}
 GLboolean glUnmapNamedBuffer(GLuint buffer) {return GL_TRUE;}
 void glUseProgram(GLuint program) {
-    context *C = &GlobalContext;
+    const char *Name = "glUseProgram";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     if(program != 0) {
         object *Object = 0;
-        if(HandledCheckProgramGet(C, program, &Object)) {
-            return;
-        }
+        HandledCheckProgramGet(C, program, &Object, Name);
+        CheckGL(Object->Program.LinkStatus == GL_FALSE, gl_error_PROGRAM_NOT_LINkED_SUCCESSFULLY);
     }
+
     if(C->ActiveProgram != program) {
-        command Command = {
-            .Type = command_BIND_PROGRAM,
-            .BindProgram = {
-                .Program = program
-            },
-        };
-        PushCommand(C, Command);
-        C->ActiveProgram = program;
+        pipeline_state_program *State = GetCurrentPipelineState(C, pipeline_state_PROGRAM);
+        State->Program = program;
     }
 }
 void glUseProgramStages(GLuint pipeline, GLbitfield stages, GLuint program) {}
@@ -2244,7 +2238,8 @@ void glValidateProgram(GLuint program) {}
 void glValidateProgramPipeline(GLuint pipeline) {}
 void glVertexArrayAttribBinding(GLuint vaobj, GLuint attribindex, GLuint bindingindex) {
     const char *Name = "glVertexArrayAttribBinding";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, vaobj, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_ATTRIB_BINDING_VAO_INVALID);
@@ -2252,7 +2247,9 @@ void glVertexArrayAttribBinding(GLuint vaobj, GLuint attribindex, GLuint binding
 }
 void glVertexArrayAttribFormat(GLuint vaobj, GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset) {
     const char *Name = "glVertexArrayAttribFormat";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, vaobj, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_ATTRIB_FORMAT_VAO_INVALID);
 
@@ -2261,14 +2258,18 @@ void glVertexArrayAttribFormat(GLuint vaobj, GLuint attribindex, GLint size, GLe
 }
 void glVertexArrayAttribIFormat(GLuint vaobj, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {
     const char *Name = "glVertexArrayAttribIFormat";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, vaobj, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_ATTRIB_FORMAT_VAO_INVALID);
     SetVertexInputAttributeFormat(C, Object, C->BoundVao == vaobj, attribindex, size, type, relativeoffset, 0, Name);
 }
 void glVertexArrayAttribLFormat(GLuint vaobj, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {
     const char *Name = "glVertexArrayAttribLFormat";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, vaobj, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_ATTRIB_FORMAT_VAO_INVALID);
     SetVertexInputAttributeFormat(C, Object, C->BoundVao == vaobj, attribindex, size, type, relativeoffset, 0, Name);
@@ -2277,7 +2278,8 @@ void glVertexArrayBindingDivisor(GLuint vaobj, GLuint bindingindex, GLuint divis
 void glVertexArrayElementBuffer(GLuint vaobj, GLuint buffer) {}
 void glVertexArrayVertexBuffer(GLuint vaobj, GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) {
     const char *Name = "glVertexArrayVertexBuffer";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, vaobj, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ARRAY_VERTEX_BUFFER_VAO_INVALID);
@@ -2285,7 +2287,8 @@ void glVertexArrayVertexBuffer(GLuint vaobj, GLuint bindingindex, GLuint buffer,
 }
 void glVertexArrayVertexBuffers(GLuint vaobj, GLuint first, GLsizei count, const GLuint * buffers, const GLintptr * offsets, const GLsizei * strides) {
     const char *Name = "glVertexArrayVertexBuffers";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     // TODO(blackedout):
     Assert(0);
@@ -2328,7 +2331,8 @@ void glVertexAttrib4uiv(GLuint index, const GLuint * v) {}
 void glVertexAttrib4usv(GLuint index, const GLushort * v) {}
 void glVertexAttribBinding(GLuint attribindex, GLuint bindingindex) {
     const char *Name = "glVertexAttribBinding";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_BINDING_NONE_BOUND);
@@ -2337,7 +2341,9 @@ void glVertexAttribBinding(GLuint attribindex, GLuint bindingindex) {
 void glVertexAttribDivisor(GLuint index, GLuint divisor) {}
 void glVertexAttribFormat(GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset) {
     const char *Name = "glVertexAttribFormat";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_FORMAT_NONE_BOUND);
 
@@ -2366,14 +2372,17 @@ void glVertexAttribI4uiv(GLuint index, const GLuint * v) {}
 void glVertexAttribI4usv(GLuint index, const GLushort * v) {}
 void glVertexAttribIFormat(GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {
     const char *Name = "glVertexAttribIFormat";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_FORMAT_NONE_BOUND);
     SetVertexInputAttributeFormat(C, Object, 1, attribindex, size, type, relativeoffset, 0, Name);
 }
 void glVertexAttribIPointer(GLuint index, GLint size, GLenum type, GLsizei stride, const void * pointer) {
     const char *Name = "glVertexAttribIPointer";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_POINTER_NONE_BOUND);
@@ -2389,14 +2398,17 @@ void glVertexAttribL4d(GLuint index, GLdouble x, GLdouble y, GLdouble z, GLdoubl
 void glVertexAttribL4dv(GLuint index, const GLdouble * v) {}
 void glVertexAttribLFormat(GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) {
     const char *Name = "glVertexAttribLFormat";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_FORMAT_NONE_BOUND);
     SetVertexInputAttributeFormat(C, Object, 1, attribindex, size, type, relativeoffset, 0, Name);
 }
 void glVertexAttribLPointer(GLuint index, GLint size, GLenum type, GLsizei stride, const void * pointer) {
     const char *Name = "glVertexAttribLPointer";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     object *Object = 0;
     CheckGL(CheckObjectTypeGet(C, C->BoundVao, object_VERTEX_ARRAY, &Object), gl_error_VERTEX_ATTRIB_POINTER_NONE_BOUND);
@@ -2412,7 +2424,8 @@ void glVertexAttribP4ui(GLuint index, GLenum type, GLboolean normalized, GLuint 
 void glVertexAttribP4uiv(GLuint index, GLenum type, GLboolean normalized, const GLuint * value) {}
 void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void * pointer) {
     const char *Name = "glVertexAttribPointer";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
     // NOTE(blackedout): Remember that `pointer` specifies the offset of the binding, NOT the relative offset of the format.
     // Since this function sets both anyway, it doesn't make a difference.
@@ -2425,49 +2438,58 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean norm
 }
 void glVertexBindingDivisor(GLuint bindingindex, GLuint divisor) {}
 void glViewport(GLint x, GLint y, GLsizei width, GLsizei height) {
-    context *C = &GlobalContext;
-    pipeline_state_viewport Viewport = {
-        .X = (GLfloat)x, .Y = (GLfloat)y, .W = (GLfloat)width, .H = (GLfloat)height
-    };
+    const char *Name = "glViewport";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
-    for(u32 I = 0; I < C->PipelineStatesTypes[pipeline_state_VIEWPORT].InstanceCount; ++I) {
-        State[I] = Viewport;
+    for(u32 I = 0; I < C->PipelineStateInfos[pipeline_state_VIEWPORT].InstanceCount; ++I) {
+        State[I].x = (float)x;
+        State[I].y = (float)y;
+        State[I].width = (float)width;
+        State[I].height = (float)height;
     }
 }
 void glViewportArrayv(GLuint first, GLsizei count, const GLfloat * v) {
     const char *Name = "glViewportArrayv";
-    context *C = &GlobalContext;
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
     CheckGL(count < 0, gl_error_VIEWPORT_COUNT_NEGATIVE);
-    CheckGL(first + count > C->PipelineStatesTypes[pipeline_state_VIEWPORT].InstanceCount, gl_error_VIEWPORT_INDEX);
+    CheckGL(first + count > C->PipelineStateInfos[pipeline_state_VIEWPORT].InstanceCount, gl_error_VIEWPORT_INDEX);
     
     pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
     for(u32 I = 0; I < count; ++I) {
-        pipeline_state_viewport Viewport = {
-            .X = v[4*I + 0], .Y = v[4*I + 1], .W = v[4*I + 2], .H = v[4*I + 3]
-        };
-        State[first + I] = Viewport;
+        State[first + I].x = v[4*I + 0];
+        State[first + I].y = v[4*I + 1];
+        State[first + I].width = v[4*I + 2];
+        State[first + I].height = v[4*I + 3];
     }
 }
 void glViewportIndexedf(GLuint index, GLfloat x, GLfloat y, GLfloat w, GLfloat h) {
     const char *Name = "glViewportIndexedf";
-    context *C = &GlobalContext;
-    CheckGL(index >= C->PipelineStatesTypes[pipeline_state_VIEWPORT].InstanceCount, gl_error_VIEWPORT_INDEX);
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
-    pipeline_state_viewport Viewport = {
-        .X = x, .Y = y, .W = w, .H = h
-    };
+    CheckGL(index >= C->PipelineStateInfos[pipeline_state_VIEWPORT].InstanceCount, gl_error_VIEWPORT_INDEX);
+
     pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
-    State[index] = Viewport;
+    State[index].x = x;
+    State[index].y = y;
+    State[index].width = w;
+    State[index].height = h;
 }
 void glViewportIndexedfv(GLuint index, const GLfloat * v) {
     const char *Name = "glViewportIndexedfv";
-    context *C = &GlobalContext;
-    CheckGL(index >= C->PipelineStatesTypes[pipeline_state_VIEWPORT].InstanceCount, gl_error_VIEWPORT_INDEX);
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
 
-    pipeline_state_viewport Viewport = {
-        .X = v[0], .Y = v[1], .W = v[2], .H = v[3]
-    };
+    CheckGL(index >= C->PipelineStateInfos[pipeline_state_VIEWPORT].InstanceCount, gl_error_VIEWPORT_INDEX);
+
     pipeline_state_viewport *State = GetCurrentPipelineState(C, pipeline_state_VIEWPORT);
-    State[index] = Viewport;
+    State[index].x = v[0];
+    State[index].y = v[1];
+    State[index].width = v[2];
+    State[index].height = v[3];
 }
 void glWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {}

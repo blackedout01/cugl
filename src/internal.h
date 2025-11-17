@@ -15,6 +15,7 @@ typedef uint8_t u8;
 typedef uint32_t u32;
 typedef uint64_t u64;
 
+#define StaticAssert(Condition) struct sas_ ## __LINE__ { int A[-((Condition) == 0)]; } 
 #define Assert(X) if((X) == 0) __builtin_debugtrap()
 #define ArrayCount(X) (sizeof(X)/sizeof(*(X)))
 #define ClampAB(X, A, B) ((X) < (A) ? (A) : ((X) > (B) ? (B) : (X)))
@@ -89,7 +90,7 @@ int GetShaderTypeInfo(GLenum type, shader_type_info *OutInfo);
 #define VulkanCheckGoto(Call, Label) if(VulkanCheck(C, Call, #Call)) goto Label;
 #define VulkanCheckReturn(Call) if(VulkanCheck(C, Call, #Call)) return;
 
-enum vertex_input_attribute_flags {
+enum vertex_array_attribute_flags {
     vertex_input_attribute_INTEGER_HANDLING_ENABLED = 0x01,
     vertex_input_attribute_INTEGER_NORMALIZE = 0x02,
     vertex_input_attribute_IS_ENABLED = 0x04,
@@ -97,28 +98,31 @@ enum vertex_input_attribute_flags {
     vertex_input_attribute_INTEGER_MASK = vertex_input_attribute_INTEGER_HANDLING_ENABLED | vertex_input_attribute_INTEGER_NORMALIZE,
 };
 
-typedef struct pipeline_state_vertex_input_attribute {
+typedef struct vertex_array_attribute {
     u32 Flags;
     GLint Size;
     GLenum Type;
     GLuint RelativeOffset;
     u32 BindingIndex;
-} pipeline_state_vertex_input_attribute;
+} vertex_array_attribute;
 
-typedef struct pipeline_state_vertex_input_binding {
+typedef struct vertex_array_binding {
     GLuint Vbo;
     GLintptr Offset;
     GLsizei Stride;
-} pipeline_state_vertex_input_binding;
+} vertex_array_binding;
 
 typedef enum object_type {
     object_NONE = 0,
     object_BUFFER,
+    object_TRANSFORM_FEEDBACK,
     object_FRAMEBUFFER,
     object_PROGRAM,
+    object_PROGRAM_PIPELINE,
     object_QUERY,
     object_RENDERBUFFER,
     object_SHADER,
+    object_SAMPLER,
     object_SYNC,
     object_TEXTURE,
     object_VERTEX_ARRAY,
@@ -174,8 +178,8 @@ typedef struct object {
         } Texture;
         struct {
             VkVertexInputBindingDescription Binding;
-            pipeline_state_vertex_input_attribute *InputAttributes;
-            pipeline_state_vertex_input_binding *InputBindings;
+            vertex_array_attribute *InputAttributes;
+            vertex_array_binding *InputBindings;
         } VertexArray;
     };
 } object;
@@ -184,23 +188,22 @@ typedef enum command_type {
     command_NONE = 0,
     command_CLEAR,
     command_DRAW,
-    command_BIND_VERTEX_BUFFERS,
-    command_BIND_PROGRAM,
+    command_BIND_VERTEX_BUFFER,
+    command_BIND_PIPELINE,
 } command_type;
 
 typedef struct command {
     command_type Type;
 
-    int ChangePipeline;
-    u32 PipelineIndex;
-
     union {
         struct {
-            GLuint VertexArray;
-        } BindVertexBuffers;
+            u32 BindingIndex;
+            VkBuffer Buffer;
+            VkDeviceSize Offset;
+        } BindVertexBuffer;
         struct {
-            GLuint Program;
-        } BindProgram;
+            u32 PipelineIndex;
+        } BindPipeline;
         struct {
 
         } Clear;
@@ -284,7 +287,19 @@ enum {
 };
 
 typedef enum gl_error_type {
+    gl_error_OUT_OF_MEMORY,
+
+    gl_error_ACQUIRE_CONTEXT,
+    gl_error_RELEASE_CONTEXT,
+
     gl_error_N_NEGATIVE,
+
+    gl_error_PROGRAM_IS_SHADER,
+    gl_error_PROGRAM_INVALID,
+    gl_error_PROGRAM_NOT_LINkED_SUCCESSFULLY,
+
+    gl_error_SHADER_IS_PROGRAM,
+    gl_error_SHADER_INVALID,
 
     gl_error_VERTEX_ATTRIB_FORMAT_NONE_BOUND,
     gl_error_VERTEX_ARRAY_ATTRIB_FORMAT_VAO_INVALID,
@@ -317,6 +332,11 @@ typedef enum gl_error_type {
     gl_error_XABLE_VERTEX_ARRAY_ATTRIB_INVALID,
     gl_error_XABLE_VERTEX_ATTRIB_INDEX,
 
+    gl_error_DRAW_MODE,
+    gl_error_DRAW_FIRST_NEGATIVE,
+    gl_error_DRAW_COUNT_NEGATIVE,
+    gl_error_DRAW_NO_VAO_BOUND,
+
     gl_error_VERTEX_ARRAY_INVALID,
     gl_error_NO_VERTEX_ARRAY,
     gl_error_VERTEX_INPUT_ATTRIBUTE_INDEX,
@@ -325,8 +345,10 @@ typedef enum gl_error_type {
     gl_error_VERTEX_INPUT_ATTRIBUTE_STRIDE_MAX,
 
     gl_error_LINE_WIDTH_LE_ZERO,
+
     gl_error_VIEWPORT_INDEX,
     gl_error_VIEWPORT_COUNT_NEGATIVE,
+
     gl_error_SCISSOR_INDEX,
     gl_error_SCISSOR_COUNT_NEGATIVE,
     gl_error_SCISSOR_WIDTH_HEIGHT_NEGATIVE,
@@ -335,6 +357,7 @@ typedef enum gl_error_type {
 } gl_error_type;
 
 typedef enum pipeline_state_type {
+    pipeline_state_HEADER,
     pipeline_state_CLEAR_COLOR,
     pipeline_state_CLEAR_DEPTH,
     pipeline_state_CLEAR_STENCIL,
@@ -344,11 +367,12 @@ typedef enum pipeline_state_type {
     pipeline_state_FRAMEBUFFER,
     pipeline_state_DRAW_BUFFERS,
 
-    //pipeline_state_VERTEX_ARRAY,
     pipeline_state_VERTEX_INPUT_ATTRIBUTES,
     pipeline_state_VERTEX_INPUT_BINDINGS,
 
     pipeline_state_PROGRAM,
+
+    pipeline_state_PRIMITIVE_TYPE,
 
     pipeline_state_COUNT
 } pipeline_state_type;
@@ -401,18 +425,24 @@ typedef struct context {
     VkCommandBuffer CommandBuffers[command_buffer_COUNT];
     VkFence Fences[fence_COUNT];
 
-    VkPrimitiveTopology CurrentPrimitiveTopoloy;
-    int IsPrimitiveTopologySet;
-
-    pipeline_state_info PipelineStatesTypes[pipeline_state_COUNT];
+    pipeline_state_info PipelineStateInfos[pipeline_state_COUNT];
     u32 PipelineStateByteCount;
     // NOTE(blackedout): [0] is always the current pipeline state
     array PipelineStates;
+
+    int IsPipelineSet;
+    u32 LastPipelineIndex;
+
+    VkVertexInputBindingDescription *VertexInputBindingDescriptions;
+    VkVertexInputAttributeDescription *VertexInputAttributeDescriptions;
 } context;
+
+int AcquireContext(context **OutC, const char *Name);
+int ReleaseContext(context *C, const char *Name);
 
 void GenerateErrorMsg(context *C, GLenum Error, GLenum Source, const char *Msg);
 void GenerateError(context *C, gl_error_type Type, const char *FunctionName);
-#define CheckGL(X, ErrorType) do { if(X) { GenerateError(C, ErrorType, Name); return; } } while(0)
+#define CheckGL(X, ErrorType, ...) do { if(X) { GenerateError(C, ErrorType, Name); if(C) { ReleaseContext(C, Name); } return __VA_ARGS__; } } while(0)
 void GenerateOther(context *C, GLenum Source, const char *Msg);
 int RequireRoomForNewObjects(context *C, u64 Count);
 int RequireRoomForNewCommands(context *C, u64 Count);
@@ -430,8 +460,8 @@ void GetObject(context *C, GLuint H, object **OutObject);
 int CheckObjectCreated(context *C, GLuint H);
 int CheckObjectTypeGet(context *C, GLuint H, object_type Type, object **OutObject);
 int CheckObjectType(context *C, GLuint H, object_type Type);
-int HandledCheckProgramGet(context *C, GLuint H, object **OutObject);
-int HandledCheckShaderGet(context *C, GLuint H, object **OutObject);
+int HandledCheckProgramGet(context *C, GLuint H, object **OutObject, const char *Name);
+int HandledCheckShaderGet(context *C, GLuint H, object **OutObject, const char *Name);
 
 void SetVertexInputAttributeFormat(context *C, object *Object, int IsCurrent, u32 Index, GLint Size, GLenum Type, GLuint RelativeOffset, u32 IntegerHandlingBits, const char *Name);
 void SetVertexInputBinding(context *C, object *Object, int IsCurrent, u32 Index, GLuint Vbo, GLintptr Offset, GLsizei Stride, const char *Name);
@@ -439,9 +469,17 @@ void SetVertexInputAttributeBinding(context *C, object *Object, int IsCurrent, u
 void SetVertexInputAttributePointer(context *C, object *Object, u32 Index, GLint Size, GLenum Type, GLsizei Stride, const void *Pointer, u32 IntegerHandlingBits, const char *Name);
 void SetVertexInputAttributeEnabled(context *C, object *Object, int IsCurrent, GLuint Index, int IsEnabled, const char *Name);
 
+GLboolean IsObjectType(GLuint H, object_type Type, const char *Name);
+
 void HandledCheckCapSet(context *C, GLenum Cap, int Enabled);
 int VulkanCheck(context *C, VkResult Result, const char *Call);
 int CreateFramebuffer(context *C, u32 ColorImageCount);
+
+typedef struct pipeline_state_header {
+    int IsCreated;
+    VkPipelineLayout Layout;
+    VkPipeline Pipeline;
+} pipeline_state_header;
 
 typedef struct pipeline_state_clear_color {
     GLfloat R, G, B, A;
@@ -450,15 +488,8 @@ typedef struct pipeline_state_clear_color {
 typedef GLfloat pipeline_state_clear_depth;
 typedef GLint pipeline_state_clear_stencil;
 
-typedef struct pipeline_state_viewport {
-    GLfloat X, Y;
-    GLfloat W, H;
-} pipeline_state_viewport;
-
-typedef struct pipeline_state_scissor {
-    GLint X, Y;
-    GLsizei W, H;
-} pipeline_state_scissor;
+typedef VkViewport pipeline_state_viewport;
+typedef VkRect2D pipeline_state_scissor;
 
 typedef struct pipeline_state_framebuffer {
     GLuint Fbo;
@@ -468,15 +499,21 @@ typedef struct pipeline_state_draw_buffer {
     GLenum Target;
 } pipeline_state_draw_buffer;
 
-#if 0
-typedef struct pipeline_state_vertex_array {
-    GLuint Vao;
-} pipeline_state_vertex_array;
-#endif
+typedef vertex_array_attribute pipeline_state_vertex_input_attribute;
+
+typedef struct pipeline_state_vertex_input_binding {
+    int IsEnabled;
+    GLsizei Stride;
+} pipeline_state_vertex_input_binding;
 
 typedef struct pipeline_state_program {
     GLuint Program;
+    GLuint Pipeline;
 } pipeline_state_program;
+
+typedef struct pipeline_state_primitive_type {
+    GLenum Type;
+} pipeline_state_primitive_type;
 
 // NOTE(blackedout): The actual pipeline state infos depend on runtime data (physical device limits), so these params
 // are used to automatically create them once the runtime data is available.
@@ -494,6 +531,10 @@ void CopyPipelineStateFromPtr(context *C, u64 DstStateIndex, void *SrcState, pip
 #define ClearCurrentPipelineState(C, Type) ClearPipelineState(C, 0, Type)
 #define CurrentPipelineStateToPtr(C, DstState, Type) CopyPipelineStateToPtr(C, DstState, 0, Type)
 #define CurrentPipelineStateFromPtr(C, SrcState, Type) CopyPipelineStateFromPtr(C, 0, SrcState, Type)
+
+int UseCurrentPipelineState(context *C, u32 Count, pipeline_state_type *Types);
+void SetDefaultPipelineState(context *C, u32 PipelineIndex);
+int CreatePipeline(context *C, u32 Index, VkRenderPass RenderPass);
 
 // NOTE(blackedout):
 // command categories
