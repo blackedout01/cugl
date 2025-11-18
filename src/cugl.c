@@ -1,94 +1,18 @@
 #include "cugl/cugl.h"
 #include "internal.h"
+#include "vulkan/vulkan_core.h"
 
 void cuglSwapBuffers(void) {
     const char *Name = "cuglSwapBuffers";
     context *C = 0;
     CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
-
-    VkRenderPass RenderPass = VK_NULL_HANDLE;
-    {
-        VkAttachmentDescription AttachmentDescriptions[] = {
-            {
-                .flags = 0,
-                .format = C->DeviceInfo.InitialSurfaceFormat.format,
-                .samples = 1,
-                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            },
-        };
-
-        VkAttachmentReference AttachmentRefs[] = {
-            {
-                .attachment = 0, // NOTE(blackedout): Fragment shader layout index
-                .layout = VK_IMAGE_LAYOUT_GENERAL,
-            },
-        };
-
-        VkSubpassDescription SubpassDescription = {
-            .flags = 0,
-            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-            .inputAttachmentCount = 0,
-            .pInputAttachments = 0,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = AttachmentRefs + 0,
-            .pResolveAttachments = 0,
-            .pDepthStencilAttachment = 0,
-            .preserveAttachmentCount = 0,
-            .pPreserveAttachments = 0,
-        };
-
-        VkRenderPassCreateInfo RenderPassCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .attachmentCount = ArrayCount(AttachmentDescriptions),
-            .pAttachments = AttachmentDescriptions,
-            .subpassCount = 1,
-            .pSubpasses = &SubpassDescription,
-            .dependencyCount = 0,
-            .pDependencies = 0,
-        };
-
-        VulkanCheckReturn(vkCreateRenderPass(C->Device, &RenderPassCreateInfo, 0, &RenderPass));
-    }
-
+    
     for(u32 I = 1; I < C->PipelineStates.Count; ++I) {
-        CreatePipeline(C, I, RenderPass);
+        CheckPipeline(C, I);
     }
 
     uint32_t AcquiredImageIndex = 0;
     VulkanCheckReturn(vkAcquireNextImageKHR(C->Device, C->Swapchain, UINT64_MAX, C->Semaphores[semaphore_PREV_PRESENT_DONE], VK_NULL_HANDLE, &AcquiredImageIndex));
-    if(C->IsSingleBuffered) {
-        C->CurrentFrontBackIndices[front_back_FRONT] = AcquiredImageIndex;
-        C->CurrentFrontBackIndices[front_back_BACK] = AcquiredImageIndex;
-    } else {
-        C->CurrentFrontBackIndices[front_back_FRONT] = AcquiredImageIndex ^ 1;
-        C->CurrentFrontBackIndices[front_back_BACK] = AcquiredImageIndex;
-    }
-
-    object *Object = 0;
-    GetObject(C, 0, &Object);
-    VkFramebuffer Framebuffer = VK_NULL_HANDLE;
-    {
-        VkFramebufferCreateInfo FramebufferCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .renderPass = RenderPass,
-            .attachmentCount = 1,
-            .pAttachments = &Object->Framebuffer.ColorImageViews[C->CurrentFrontBackIndices[front_back_BACK]],
-            .width = C->DeviceInfo.SurfaceCapabilities.currentExtent.width,
-            .height = C->DeviceInfo.SurfaceCapabilities.currentExtent.height,
-            .layers = 1,
-        };
-
-        VulkanCheckReturn(vkCreateFramebuffer(C->Device, &FramebufferCreateInfo, 0, &Framebuffer));
-    }
 
     VkCommandBufferBeginInfo BeginInfo = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -98,23 +22,7 @@ void cuglSwapBuffers(void) {
     };
     VulkanCheckReturn(vkBeginCommandBuffer(C->CommandBuffers[command_buffer_GRAPHICS], &BeginInfo));
 
-    VkRenderPassBeginInfo RenderPassBeginInfo = {
-        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-        .pNext = 0,
-        .renderPass = RenderPass,
-        .framebuffer = Framebuffer,
-        .renderArea = {
-            .offset.x = 0,
-            .offset.y = 0,
-            .extent.width = C->DeviceInfo.SurfaceCapabilities.currentExtent.width,
-            .extent.height = C->DeviceInfo.SurfaceCapabilities.currentExtent.height,
-        },
-        .clearValueCount = 1,
-        .pClearValues = &Object->Framebuffer.ClearValue,
-    };
-
     VkCommandBuffer GraphicsCommandBuffer = C->CommandBuffers[command_buffer_GRAPHICS];
-    vkCmdBeginRenderPass(GraphicsCommandBuffer, &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
     
     for(u32 I = 0; I < C->Commands.Count; ++I) {
         command *Command = ArrayData(command, C->Commands) + I;
@@ -128,6 +36,40 @@ void cuglSwapBuffers(void) {
         } break;
         case command_DRAW: {
             vkCmdDraw(GraphicsCommandBuffer, Command->Draw.VertexCount, Command->Draw.InstanceCount, Command->Draw.VertexOffset, Command->Draw.InstanceOffset);
+        } break;
+        case command_BEGIN_RENDER_PASS: {
+            object *ObjectF = 0;
+            Assert(0 == CheckObjectTypeGet(C, Command->BeginRenderPass.Fbo, object_FRAMEBUFFER, &ObjectF));
+            
+            VkFramebuffer Framebuffer = VK_NULL_HANDLE;
+            if(Command->BeginRenderPass.Fbo == 0) {
+                Framebuffer = C->SwapchainFramebuffers[AcquiredImageIndex];
+            } else {
+                Framebuffer = ObjectF->Framebuffer.Framebuffer;
+            }
+            VkClearValue ClearValue = {
+                .color = {
+                    .float32[0] = 0.0f,
+                    .float32[1] = 0.5f,
+                    .float32[2] = 0.0f,
+                    .float32[3] = 0.0f
+                }
+            };
+            VkRenderPassBeginInfo RenderPassBeginInfo = {
+                .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+                .pNext = 0,
+                .renderPass = ObjectF->Framebuffer.RenderPass,
+                .framebuffer = Framebuffer,
+                .renderArea = {
+                    .offset.x = 0,
+                    .offset.y = 0,
+                    .extent.width = C->DeviceInfo.SurfaceCapabilities.currentExtent.width,
+                    .extent.height = C->DeviceInfo.SurfaceCapabilities.currentExtent.height,
+                },
+                .clearValueCount = 1,
+                .pClearValues = &ClearValue,
+            };
+            vkCmdBeginRenderPass(GraphicsCommandBuffer, &RenderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
         } break;
         default: {
 
@@ -212,7 +154,7 @@ void cuglSwapBuffers(void) {
         .pWaitSemaphores = &C->Semaphores[semaphore_RENDER_COMPLETE],
         .swapchainCount = 1,
         .pSwapchains = &C->Swapchain,
-        .pImageIndices = &C->CurrentFrontBackIndices[front_back_BACK],
+        .pImageIndices = &AcquiredImageIndex,
         .pResults = 0,
     };
     VulkanCheckReturn(vkQueuePresentKHR(SurfaceQueue, &PresentInfo));
@@ -221,14 +163,11 @@ void cuglSwapBuffers(void) {
 
     VulkanCheckReturn(vkResetCommandBuffer(C->CommandBuffers[command_buffer_GRAPHICS], 0));
 
-    vkDestroyFramebuffer(C->Device, Framebuffer, 0);
-
     for(u32 I = 1; I < C->PipelineStates.Count; ++I) {
         pipeline_state_header *Header = GetPipelineState(C, I, pipeline_state_HEADER);
         vkDestroyPipelineLayout(C->Device, Header->Layout, 0);
         vkDestroyPipeline(C->Device, Header->Pipeline, 0);
     }
-    vkDestroyRenderPass(C->Device, RenderPass, 0);
 
     ArrayClear(&C->Commands, sizeof(command));
     C->LastPipelineIndex = 0;
@@ -327,21 +266,18 @@ int cuglCreateContext(const context_create_params *Params) {
     }
 
     VulkanCheckGoto(vkCreateSwapchainKHR(C->Device, &SwapchainCreateInfo, 0, &C->Swapchain), label_Error);
-    uint32_t SwapchainImageCount = 0;
-    VulkanCheckGoto(vkGetSwapchainImagesKHR(C->Device, C->Swapchain, &SwapchainImageCount, 0), label_Error);
-    if(CreateFramebuffer(C, SwapchainImageCount)) {
-        goto label_Error;
-    }
-    
-    GetObject(C, 0, &Object);
-    VulkanCheckGoto(vkGetSwapchainImagesKHR(C->Device, C->Swapchain, &SwapchainImageCount, Object->Framebuffer.ColorImages), label_Error);
+    VulkanCheckGoto(vkGetSwapchainImagesKHR(C->Device, C->Swapchain, &C->SwapchainImageCount, 0), label_Error);
+    C->SwapchainImages = calloc(C->SwapchainImageCount, sizeof(VkImage));
+    C->SwapchainImageViews = calloc(C->SwapchainImageCount, sizeof(VkImageView));
+    C->SwapchainFramebuffers = calloc(C->SwapchainImageCount, sizeof(VkFramebuffer));
+    VulkanCheckGoto(vkGetSwapchainImagesKHR(C->Device, C->Swapchain, &C->SwapchainImageCount, C->SwapchainImages), label_Error);
 
-    for(u32 I = 0; I < SwapchainImageCount; ++I) {
+    for(u32 I = 0; I < C->SwapchainImageCount; ++I) {
         VkImageViewCreateInfo ImageViewCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .pNext = 0,
             .flags = 0,
-            .image = Object->Framebuffer.ColorImages[I],
+            .image = C->SwapchainImages[I],
             .viewType = VK_IMAGE_VIEW_TYPE_2D,
             .format = C->DeviceInfo.InitialSurfaceFormat.format,
             .components = { .r = VK_COMPONENT_SWIZZLE_IDENTITY, .g = VK_COMPONENT_SWIZZLE_IDENTITY, .b = VK_COMPONENT_SWIZZLE_IDENTITY, .a = VK_COMPONENT_SWIZZLE_IDENTITY },
@@ -354,17 +290,18 @@ int cuglCreateContext(const context_create_params *Params) {
             }
         };
 
-        VulkanCheckGoto(vkCreateImageView(C->Device, &ImageViewCreateInfo, 0, Object->Framebuffer.ColorImageViews + I), label_Error);
+        VulkanCheckGoto(vkCreateImageView(C->Device, &ImageViewCreateInfo, 0, C->SwapchainImageViews + I), label_Error);
         ++CreatedImageViewCount;
     }
 
-    // TODO(blackedout): Put this default somewhere else?
-    if(Params->IsSingleBuffered) { 
-        Object->Framebuffer.ColorDrawCount = 1;
-        Object->Framebuffer.ColorDrawIndices[0] = 0;
-    } else {
-        Object->Framebuffer.ColorDrawCount = 1;
-        Object->Framebuffer.ColorDrawIndices[0] = 1;
+    {
+        GLuint DefaultFbo = 0;
+        object *Object = 0;
+        ArrayRequireRoom(&C->Objects, 1, sizeof(object), INITIAL_OBJECT_CAPACITY);
+        GenObject(C, &DefaultFbo, &Object);
+        Assert(DefaultFbo == 0);
+        Object->Type = object_FRAMEBUFFER;
+        CreateObject(C, Object);
     }
 
     {
@@ -387,7 +324,6 @@ int cuglCreateContext(const context_create_params *Params) {
         }
     }
 
-    C->IsSingleBuffered = Params->IsSingleBuffered;
     C->Config = GetDefaultConfig(C->DeviceInfo.SurfaceCapabilities.currentExtent.width, C->DeviceInfo.SurfaceCapabilities.currentExtent.height);
 
     // TODO error check
@@ -402,7 +338,7 @@ label_Error:
         vkDestroySemaphore(C->Device, C->Semaphores[I], 0);
     }
     for(u32 I = 0; I < CreatedImageViewCount; ++I) {
-        vkDestroyImageView(C->Device, Object->Framebuffer.ColorImageViews[I], 0);
+        vkDestroyImageView(C->Device, C->SwapchainImageViews[I], 0);
     }
     DeleteObject(C, Object);
     free(C->SwapchainImages);
@@ -501,13 +437,16 @@ void glBindFramebuffer(GLenum target, GLuint framebuffer) {
         return;
     }
 
+    pipeline_state_framebuffer *State = GetCurrentPipelineState(C, pipeline_state_FRAMEBUFFER);
     int WasNone = 1;
     if(target == GL_FRAMEBUFFER || target == GL_READ_FRAMEBUFFER) {
-        C->BoundFramebuffers[framebuffer_READ] = framebuffer;
+        C->BoundReadFbo = framebuffer;
+        State->ReadFbo = framebuffer;
         WasNone = 0;
     }
     if(target == GL_FRAMEBUFFER || target == GL_DRAW_FRAMEBUFFER) {
-        C->BoundFramebuffers[framebuffer_WRITE] = framebuffer;
+        C->BoundDrawFbo = framebuffer;
+        State->DrawFbo = framebuffer;
         WasNone = 0;
     }
     if(WasNone) {
@@ -991,36 +930,29 @@ void glCopyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffse
 void glCopyTextureSubImage1D(GLuint texture, GLint level, GLint xoffset, GLint x, GLint y, GLsizei width) {}
 void glCopyTextureSubImage2D(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height) {}
 void glCopyTextureSubImage3D(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height) {}
-void glCreateBuffers(GLsizei n, GLuint * buffers) {}
-void glCreateFramebuffers(GLsizei n, GLuint * framebuffers) {}
+void glCreateBuffers(GLsizei n, GLuint * buffers) {
+    NoContextCreateObjects(n, object_BUFFER, buffers, "glCreateBuffers");
+}
+void glCreateFramebuffers(GLsizei n, GLuint * framebuffers) {
+    NoContextCreateObjects(n, object_FRAMEBUFFER, framebuffers, "glCreateFramebuffers");
+}
 GLuint glCreateProgram(void) {
-    const char *Name = "glCreateProgram";
     GLuint Result = 0;
-    context *C = 0;
-    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT, Result);
-
-    object Template = {0};
-    Template.Type = object_PROGRAM;
-    if(CreateObjects(C, Template, 1, &Result)) {
-        return Result;
-    }
-
-    object *Object = 0;
-    GetObject(C, Result, &Object);
-    if(GlslangProgramCreate(&Object->Program.GlslangProgram)) {
-        DeleteObjects(C, 1, &Result, object_PROGRAM);
-        Result = 0;
-
-        const char *Msg = "Custom: glCreateProgram out of memory";
-        GenerateErrorMsg(C, GL_OUT_OF_MEMORY, GL_DEBUG_SOURCE_API, Msg);
-    }
-
+    NoContextCreateObjects(1, object_PROGRAM, &Result, "glCreateProgram");
     return Result;
 }
-void glCreateProgramPipelines(GLsizei n, GLuint * pipelines) {}
-void glCreateQueries(GLenum target, GLsizei n, GLuint * ids) {}
-void glCreateRenderbuffers(GLsizei n, GLuint * renderbuffers) {}
-void glCreateSamplers(GLsizei n, GLuint * samplers) {}
+void glCreateProgramPipelines(GLsizei n, GLuint * pipelines) {
+    NoContextCreateObjects(n, object_PROGRAM_PIPELINE, pipelines, "glCreateProgramPipelines");
+}
+void glCreateQueries(GLenum target, GLsizei n, GLuint * ids) {
+    NoContextCreateObjects(n, object_QUERY, ids, "glCreateQueries");
+}
+void glCreateRenderbuffers(GLsizei n, GLuint * renderbuffers) {
+    NoContextCreateObjects(n, object_RENDERBUFFER, renderbuffers, "glCreateRenderbuffers");
+}
+void glCreateSamplers(GLsizei n, GLuint * samplers) {
+    NoContextCreateObjects(n, object_SAMPLER, samplers, "glCreateSamplers");
+}
 GLuint glCreateShader(GLenum type) {
     const char *Name = "glCreateShader";
     GLuint Result = 0;
@@ -1028,23 +960,28 @@ GLuint glCreateShader(GLenum type) {
     CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT, Result);
     
     shader_type_info TypeInfo = {0};
-    if(GetShaderTypeInfo(type, &TypeInfo)) {
-        const char *Msg = "glCreateShader: An INVALID_ENUM error is generated and zero is returned if type is not one of the values in table 7.1.";
-        GenerateErrorMsg(C, GL_INVALID_ENUM, GL_DEBUG_SOURCE_APPLICATION, Msg);
-        return Result;
-    }
+    CheckGL(GetShaderTypeInfo(type, &TypeInfo), gl_error_SHADER_TYPE, Result);
 
-    object Template = {0};
-    Template.Type = object_SHADER;
-    Template.Shader.Type = type;
-    CreateObjects(C, Template, 1, &Result);
-    
+    ArrayRequireRoom(&C->Objects, 1, sizeof(object), INITIAL_OBJECT_CAPACITY);
+    object *Object = 0;
+    GenObject(C, &Result, &Object);
+    Object->Type = object_SHADER;
+    Object->Shader.Type = type;
+    CreateObject(C, Object);
+
+    ReleaseContext(C, Name);
     return Result;
 }
 GLuint glCreateShaderProgramv(GLenum type, GLsizei count, const GLchar *const* strings) {return 1;}
-void glCreateTextures(GLenum target, GLsizei n, GLuint * textures) {}
-void glCreateTransformFeedbacks(GLsizei n, GLuint * ids) {}
-void glCreateVertexArrays(GLsizei n, GLuint * arrays) {}
+void glCreateTextures(GLenum target, GLsizei n, GLuint * textures) {
+    NoContextCreateObjects(n, object_TEXTURE, textures, "glCreateTextures");
+}
+void glCreateTransformFeedbacks(GLsizei n, GLuint * ids) {
+    NoContextCreateObjects(n, object_TRANSFORM_FEEDBACK, ids, "glCreateTransformFeedbacks");
+}
+void glCreateVertexArrays(GLsizei n, GLuint * arrays) {
+    NoContextCreateObjects(n, object_VERTEX_ARRAY, arrays, "glCreateVertexArrays");
+}
 void glCullFace(GLenum mode) {
     const char *Name = "glCullFace";
     context *C = 0;
@@ -1282,6 +1219,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     pipeline_state_primitive_type *State = GetCurrentPipelineState(C, pipeline_state_PRIMITIVE_TYPE);
     State->Type = mode;
     
+    CheckGL(PotentiallySaveSubpass(C), gl_error_OUT_OF_MEMORY);
     pipeline_state_type Types[] = {
         pipeline_state_VIEWPORT,
         pipeline_state_SCISSOR,
@@ -1308,8 +1246,50 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
 void glDrawArraysIndirect(GLenum mode, const void * indirect) {}
 void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instancecount) {}
 void glDrawArraysInstancedBaseInstance(GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseinstance) {}
-void glDrawBuffer(GLenum buf) {}
-void glDrawBuffers(GLsizei n, const GLenum * bufs) {}
+void glDrawBuffer(GLenum buf) {
+    const char *Name = "glDrawBuffer";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    // NOTE(blackedout): Assert here because if none is bound the default one is affected
+    object *Object = 0;
+    Assert(0 == CheckObjectTypeGet(C, C->BoundDrawFbo, object_FRAMEBUFFER, &Object));
+
+    color_attachment_info Info = {0};
+    CheckGL(GetColorAttachmentInfo(buf, Object->Framebuffer.ColorAttachmentCapacity, &Info), gl_error_DRAW_BUFFER_BUF_INVALID);
+
+    if(C->BoundDrawFbo == 0) {
+        CheckGL(Info.Flags & color_attachment_info_IS_INVALID_FOR_DEFAULT_FBO, gl_error_DRAW_BUFFER_BUF_INVALID_DEFAULT_FRAMEBUFFER);
+        Assert(0);
+    } else {
+        CheckGL(Info.Flags & color_attachment_info_IS_INVALID_FOR_OTHER_FBO, gl_error_DRAW_BUFFER_BUF_INVALID_OTHER_FRAMEBUFFER);
+
+        u32 I = 0;
+        for(; I < Info.Index; ++I) {
+            Object->Framebuffer.ColorAttachments[I].IsDrawBuffer = 0;
+        }
+        Object->Framebuffer.ColorAttachments[I++].IsDrawBuffer = 1;
+        Object->Framebuffer.MaxColorAttachmentRange = I;
+        for(; I < Object->Framebuffer.ColorAttachmentCapacity; ++I) {
+            Object->Framebuffer.ColorAttachments[I].IsDrawBuffer = 0;
+        }
+    }
+
+    ReleaseContext(C, Name);
+}
+void glDrawBuffers(GLsizei n, const GLenum * bufs) {
+    const char *Name = "glDrawBuffers";
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+
+    // NOTE(blackedout): Assert here because if none is bound the default one is affected
+    object *Object = 0;
+    Assert(0 == CheckObjectTypeGet(C, C->BoundDrawFbo, object_FRAMEBUFFER, &Object));
+
+    Assert(0);
+
+    ReleaseContext(C, Name);
+}
 void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void * indices) {}
 void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const void * indices, GLint basevertex) {}
 void glDrawElementsIndirect(GLenum mode, GLenum type, const void * indirect) {}
@@ -1382,65 +1362,31 @@ void glFrontFace(GLenum mode) {
 #undef MakeCase
 }
 void glGenBuffers(GLsizei n, GLuint * buffers) {
-    const char *Name = "glGenBuffers";
-    context *C = 0;
-    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
-
-    object Template = {0};
-    Template.Type = object_BUFFER;
-    CreateObjectsSizei(C, Template, n, buffers);
+    NoContextGenObjects(n, object_BUFFER, buffers, "glGenBuffers");
 }
 void glGenFramebuffers(GLsizei n, GLuint * framebuffers) {
-    const char *Name = "glGenFramebuffers";
-    context *C = 0;
-    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
-
-    object Template = {0};
-    Template.Type = object_FRAMEBUFFER;
-    CreateObjectsSizei(C, Template, n, framebuffers);
+    NoContextGenObjects(n, object_FRAMEBUFFER, framebuffers, "glGenFramebuffers");
 }
 void glGenProgramPipelines(GLsizei n, GLuint * pipelines) {
-    const char *Name = "glGenProgramPipelines";
-    context *C = 0;
-    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
-
-    CheckGL(n < 0, gl_error_N_NEGATIVE);
-    object Template = {0};
-    Template.Type = object_PROGRAM_PIPELINE;
-    CreateObjects(C, Template, n, pipelines);
+    NoContextGenObjects(n, object_PROGRAM_PIPELINE, pipelines, "glGenProgramPipelines");
 }
 void glGenQueries(GLsizei n, GLuint * ids) {
-    const char *Name = "glGenQueries";
-    context *C = 0;
-    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
-
-    object Template = {0};
-    Template.Type = object_QUERY;
-    CreateObjectsSizei(C, Template, n, ids);
+    NoContextGenObjects(n, object_QUERY, ids, "glGenQueries");
 }
-void glGenRenderbuffers(GLsizei n, GLuint * renderbuffers) {}
-void glGenSamplers(GLsizei count, GLuint * samplers) {}
+void glGenRenderbuffers(GLsizei n, GLuint * renderbuffers) {
+    NoContextGenObjects(n, object_RENDERBUFFER, renderbuffers, "glGenRenderbuffers");
+}
+void glGenSamplers(GLsizei count, GLuint * samplers) {
+    NoContextGenObjects(count, object_SAMPLER, samplers, "glGenSamplers");
+}
 void glGenTextures(GLsizei n, GLuint * textures) {
-    const char *Name = "glGenTextures";
-    context *C = 0;
-    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
-
-    object Template = {0};
-    Template.Type = object_TEXTURE;
-    CreateObjectsSizei(C, Template, n, textures);
+    NoContextGenObjects(n, object_TEXTURE, textures, "glGenTextures");
 }
-void glGenTransformFeedbacks(GLsizei n, GLuint * ids) {}
+void glGenTransformFeedbacks(GLsizei n, GLuint * ids) {
+    NoContextGenObjects(n, object_TRANSFORM_FEEDBACK, ids, "glGenTransformFeedbacks");
+}
 void glGenVertexArrays(GLsizei n, GLuint * arrays) {
-    const char *Name = "glGenVertexArrays";
-    context *C = 0;
-    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
-
-    CheckGL(n < 0, gl_error_N_NEGATIVE);
-
-    object Template = {0};
-    Template.Type = object_VERTEX_ARRAY;
-    CreateObjectsSizei(C, Template, n, arrays);
-    // NOTE(blackedout): State acquiry only when first bound (specs).
+    NoContextGenObjects(n, object_VERTEX_ARRAY, arrays, "glGenVertexArrays");
 }
 void glGenerateMipmap(GLenum target) {}
 void glGenerateTextureMipmap(GLuint texture) {}
@@ -1731,43 +1677,43 @@ void glInvalidateSubFramebuffer(GLenum target, GLsizei numAttachments, const GLe
 void glInvalidateTexImage(GLuint texture, GLint level) {}
 void glInvalidateTexSubImage(GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth) {}
 GLboolean glIsBuffer(GLuint buffer) {
-    return IsObjectType(buffer, object_BUFFER, "glIsBuffer");
+    return NoContextIsObjectType(buffer, object_BUFFER, "glIsBuffer");
 }
 GLboolean glIsEnabled(GLenum cap) {return GL_TRUE;}
 GLboolean glIsEnabledi(GLenum target, GLuint index) {return GL_TRUE;}
 GLboolean glIsFramebuffer(GLuint framebuffer) {
-    return IsObjectType(framebuffer, object_FRAMEBUFFER, "glIsFramebuffer");
+    return NoContextIsObjectType(framebuffer, object_FRAMEBUFFER, "glIsFramebuffer");
 }
 GLboolean glIsProgram(GLuint program) {
-    return IsObjectType(program, object_PROGRAM, "glIsProgram");
+    return NoContextIsObjectType(program, object_PROGRAM, "glIsProgram");
 }
 GLboolean glIsProgramPipeline(GLuint pipeline) {
-    return IsObjectType(pipeline, object_PROGRAM_PIPELINE, "glIsProgramPipeline");
+    return NoContextIsObjectType(pipeline, object_PROGRAM_PIPELINE, "glIsProgramPipeline");
 }
 GLboolean glIsQuery(GLuint id) {
-    return IsObjectType(id, object_QUERY, "glIsQuery");
+    return NoContextIsObjectType(id, object_QUERY, "glIsQuery");
 }
 GLboolean glIsRenderbuffer(GLuint renderbuffer) {
-    return IsObjectType(renderbuffer, object_RENDERBUFFER, "glIsRenderbuffer");
+    return NoContextIsObjectType(renderbuffer, object_RENDERBUFFER, "glIsRenderbuffer");
 }
 GLboolean glIsSampler(GLuint sampler) {
-    return IsObjectType(sampler, object_SAMPLER, "glIsSampler");
+    return NoContextIsObjectType(sampler, object_SAMPLER, "glIsSampler");
 }
 GLboolean glIsShader(GLuint shader) {
-    return IsObjectType(shader, object_SHADER, "glIsShader");
+    return NoContextIsObjectType(shader, object_SHADER, "glIsShader");
 }
 GLboolean glIsSync(GLsync sync) {
     // TODO(blackedout): Cast
-    return IsObjectType((GLuint)sync, object_SYNC, "glIsSync");
+    return NoContextIsObjectType((GLuint)sync, object_SYNC, "glIsSync");
 }
 GLboolean glIsTexture(GLuint texture) {
-    return IsObjectType(texture, object_TEXTURE, "glIsTexture");
+    return NoContextIsObjectType(texture, object_TEXTURE, "glIsTexture");
 }
 GLboolean glIsTransformFeedback(GLuint id) {
-    return IsObjectType(id, object_TRANSFORM_FEEDBACK, "glIsTransformFeedback");
+    return NoContextIsObjectType(id, object_TRANSFORM_FEEDBACK, "glIsTransformFeedback");
 }
 GLboolean glIsVertexArray(GLuint array) {
-    return IsObjectType(array, object_VERTEX_ARRAY, "glIsVertexArray");
+    return NoContextIsObjectType(array, object_VERTEX_ARRAY, "glIsVertexArray");
 }
 void glLineWidth(GLfloat width) {
     const char *Name = "glLineWidth";

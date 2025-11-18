@@ -21,6 +21,8 @@ int ArrayRequireRoom(array *Array, u64 Count, u64 InstanceByteCount, u64 Initial
         }
         Array->Data = NewData;
         Array->Capacity = InitialCapacity;
+
+        return 0;
     }
 
     u64 NewCapacity = DoubleUntilFits(NeededCapacity, 2*Array->Capacity);

@@ -155,6 +155,7 @@ void GenerateError(context *C, gl_error_type Type, const char *FunctionName) {
     MakeCaseApp(gl_error_PROGRAM_INVALID, GL_INVALID_VALUE, "An INVALID_VALUE error is generated if program is neither zero nor the name of either a program or shader object.");
     MakeCaseApp(gl_error_PROGRAM_NOT_LINkED_SUCCESSFULLY, GL_INVALID_OPERATION, "An INVALID_OPERATION error is generated if program has not been linked successfully. The current rendering state is not modified.");
     
+    MakeCaseApp(gl_error_SHADER_TYPE, GL_INVALID_ENUM, "An INVALID_ENUM error is generated and zero is returned if type is not one of the values in table 7.1.");
     MakeCaseApp(gl_error_SHADER_IS_PROGRAM, GL_INVALID_OPERATION, "An INVALID_OPERATION error is generated if shader is the name of a program object.");
     MakeCaseApp(gl_error_SHADER_INVALID, GL_INVALID_VALUE, "An INVALID_VALUE error is generated if shader is not the name of either a program or shader object.");
 
@@ -199,6 +200,10 @@ void GenerateError(context *C, gl_error_type Type, const char *FunctionName) {
     MakeCaseApp(gl_error_VERTEX_INPUT_BINDING_INDEX, GL_INVALID_VALUE, "An INVALID_VALUE error is generated if bindingindex is greater than or equal to the value of MAX_VERTEX_ATTRIB_BINDINGS.");
     MakeCaseApp(gl_error_VERTEX_INPUT_ATTRIBUTE_STRIDE_NEGATIVE, GL_INVALID_VALUE, "An INVALID_VALUE error is generated if stride is negative.");
     MakeCaseApp(gl_error_VERTEX_INPUT_ATTRIBUTE_STRIDE_MAX, GL_INVALID_VALUE, "An INVALID_VALUE error is generated if stride is greater than the value of MAX_VERTEX_ATTRIB_STRIDE.");
+
+    MakeCaseApp(gl_error_DRAW_BUFFER_BUF_INVALID, GL_INVALID_OPERATION, "An INVALID_ENUM error is generated if buf is not one of the values in tables 17.5 or 17.4.");
+    MakeCaseApp(gl_error_DRAW_BUFFER_BUF_INVALID_DEFAULT_FRAMEBUFFER, GL_INVALID_OPERATION, "An INVALID_OPERATION error is generated if the default framebuffer is affected and buf is a value (other than NONE) that does not indicate one of the color buffers allocated to the default framebuffer.");
+    MakeCaseApp(gl_error_DRAW_BUFFER_BUF_INVALID_OTHER_FRAMEBUFFER, GL_INVALID_OPERATION, "An INVALID_OPERATION error is generated if a framebuffer object is affected and buf is one of the constants from table 17.4 (other than NONE), or COLOR_ATTACHMENTm and m is greater than or equal to the value of MAX_COLOR_ATTACHMENTS.");
 
     MakeCaseApp(gl_error_LINE_WIDTH_LE_ZERO, GL_INVALID_VALUE, "An INVALID_VALUE error is generated if width is less than or equal to zero.");
     MakeCaseApp(gl_error_VIEWPORT_INDEX, GL_INVALID_VALUE, "An INVALID_VALUE error is generated if first + count is greater than the value of MAX_VIEWPORTS.");
@@ -245,45 +250,82 @@ int PushCommand(context *C, command Command) {
     return 0;
 }
 
-int CreateObjects(context *Context, object Template, u64 Count, GLuint *OutHandles) {
-    if(RequireRoomForNewObjects(Context, Count)) {
-        return 1;
+void GenObject(context *C, GLuint *OutHandle, object **OutObject) {
+    Assert(C->Objects.Count < C->Objects.Capacity);
+
+    object *Objects = C->Objects.Data;
+    u64 Index = C->NextFreeObjectIndex;
+    Assert(Objects[Index].Type == object_NONE);
+    memset(Objects + Index, 0, sizeof(object));
+
+    u64 NextFreeIndex = Objects[Index].None.NextFreeIndex;
+    if(C->FreeObjectCount == 0) {
+        // NOTE(blackedout): Object was just appended
+        ++C->NextFreeObjectIndex;
+    } else {
+        C->NextFreeObjectIndex = NextFreeIndex;
+        --C->FreeObjectCount;
     }
+    
+    ++C->Objects.Count;
 
-    object *Objects = Context->Objects.Data;
-    for(u64 I = 0; I < Count; ++I) {
-        u64 Index = Context->NextFreeObjectIndex;
-
-        if(Objects[Index].Type != object_NONE) {
-            GenerateErrorMsg(Context, 0, GL_DEBUG_SOURCE_API, "");
-            return 1;
-        }
-
-        u64 NextFreeIndex = Objects[Index].None.NextFreeIndex;
-        Objects[Index] = Template;
-        OutHandles[I] = Index;
-        
-        if(Context->FreeObjectCount == 0) {
-            // NOTE(blackedout): Object was just appended
-            ++Context->NextFreeObjectIndex;
-        } else {
-            Context->NextFreeObjectIndex = NextFreeIndex;
-            --Context->FreeObjectCount;
-        }
-        
-        ++Context->Objects.Count;
-    }
-
-    return 0;
+    *OutHandle = Index;
+    *OutObject = Objects + Index;
 }
 
-int CreateObjectsSizei(context *Context, object Template, GLsizei Count, GLuint *OutHandles) {
-    if(Count < 0) {
-        GenerateErrorMsg(Context, GL_INVALID_ENUM, GL_DEBUG_SOURCE_APPLICATION, "");
-        return 1;
-    }
+int CreateObject(context *C, object *Object) {
+    Assert(Object->Type != object_NONE);
+    Assert(Object->IsCreated == 0);
+    switch(Object->Type) {
+    case object_BUFFER: {
 
-    return CreateObjects(Context, Template, (u64)Count, OutHandles);
+    } break;
+    case object_FRAMEBUFFER: {
+        u32 ColorAttachmentCount = C->DeviceInfo.Properties.limits.maxFragmentOutputAttachments;
+        Object->Framebuffer.ColorAttachments = calloc(ColorAttachmentCount, sizeof(*Object->Framebuffer.ColorAttachments));
+        if(Object->Framebuffer.ColorAttachments == 0) {
+            return 1;
+        }
+        Object->Framebuffer.ColorAttachmentCapacity = ColorAttachmentCount;
+    } break;
+    case object_PROGRAM: {
+        if(GlslangProgramCreate(&Object->Program.GlslangProgram)) {
+            return 1;
+        }
+    } break;
+    case object_PROGRAM_PIPELINE: {
+
+    } break;
+    case object_QUERY: {
+
+    } break;
+    case object_RENDERBUFFER: {
+
+    } break;
+    case object_SAMPLER: {
+
+    } break;
+    case object_SHADER: {
+
+    } break;
+    case object_SYNC: {
+
+    } break;
+    case object_TEXTURE: {
+
+    } break;
+    case object_TRANSFORM_FEEDBACK: {
+
+    } break;
+    case object_VERTEX_ARRAY: {
+
+    } break;
+    default: {
+        Assert(0);
+    } break;
+    }
+    Object->IsCreated = 1;
+    return 0;
 }
 
 void DeleteObject(context *C, object *Object) {
@@ -489,7 +531,42 @@ void SetVertexInputAttributeEnabled(context *C, object *Object, int IsCurrent, G
     }
 }
 
-GLboolean IsObjectType(GLuint H, object_type Type, const char *Name) {
+void NoContextGenObjects(GLsizei Count, object_type Type, GLuint *OutHandles, const char *Name) {
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+    CheckGL(Count < 0, gl_error_N_NEGATIVE);
+
+    object Template = {0};
+    Template.Type = Type;
+    ArrayRequireRoom(&C->Objects, Count, sizeof(object), INITIAL_OBJECT_CAPACITY);
+    for(u64 I = 0; I < Count; ++I) {
+        object *Object = 0;
+        GenObject(C, OutHandles + I, &Object);
+        Object->Type = Type;
+    }
+    // NOTE(blackedout): State acquiry only when first bound (vertex array specs).
+    // TODO(blackedout): Check for other object types
+    ReleaseContext(C, Name);
+}
+
+void NoContextCreateObjects(GLsizei Count, object_type Type, GLuint *OutHandles, const char *Name) {
+    context *C = 0;
+    CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT);
+    CheckGL(Count < 0, gl_error_N_NEGATIVE);
+
+    ArrayRequireRoom(&C->Objects, Count, sizeof(object), INITIAL_OBJECT_CAPACITY);
+    for(u64 I = 0; I < Count; ++I) {
+        object *Object = 0;
+        GenObject(C, OutHandles + I, &Object);
+        Object->Type = Type;
+        // TODO(blackedout): Handle error
+        CreateObject(C, Object);
+    }
+
+    ReleaseContext(C, Name);
+}
+
+GLboolean NoContextIsObjectType(GLuint H, object_type Type, const char *Name) {
     context *C = 0;
     GLboolean Result = GL_FALSE;
     CheckGL(AcquireContext(&C, Name), gl_error_ACQUIRE_CONTEXT, Result);
@@ -543,29 +620,272 @@ int VulkanCheck(context *C, VkResult Result, const char *Call) {
     return 0;
 }
 
-int CreateFramebuffer(context *C, u32 ColorImageCount) {
-    int Result = 1;
+int CheckFramebuffer(context *C, GLuint Fbo) {
+    object *Object = 0;
+    Assert(0 == CheckObjectTypeGet(C, Fbo, object_FRAMEBUFFER, &Object));
 
-    object Template = {0};
-    Template.Type = object_FRAMEBUFFER;
-    // TODO(blackedout): Handle frees
-    Template.Framebuffer.ColorImages = malloc(ColorImageCount*sizeof(VkImage));
-    Template.Framebuffer.ColorImageViews = malloc(ColorImageCount*sizeof(VkImageView));
-    Template.Framebuffer.ColorDrawIndices = malloc(ColorImageCount*sizeof(u32));
-
-    
-
-    GLuint Index;
-    if(CreateObjects(C, Template, 1, &Index)) {
-        goto label_Error;
+    if(Object->Framebuffer.RenderPass != VK_NULL_HANDLE) {
+        return 0;
     }
 
-    Result = 0;
-    goto label_Exit;
+    VkAttachmentDescription *AttachmentDescriptions = 0;
+    // NOTE(blackedout): The default framebuffer being a normal framebuffer doesn't work well with Vulkan and it's anger inducing
+    if(Fbo == 0) {
+        VkAttachmentDescription AttachmentDescriptionsX[] = {
+            {
+                .flags = 0,
+                .format = C->DeviceInfo.InitialSurfaceFormat.format,
+                .samples = 1,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            },
+        };
 
-label_Error:;
+        VkAttachmentReference AttachmentReferences[] = {
+            {
+                .attachment = 0,
+                .layout = VK_IMAGE_LAYOUT_GENERAL
+            },
+        };
+
+        VkSubpassDescription SubpassDescription = {
+            .flags = 0,
+            .pipelineBindPoint = 0,
+            .inputAttachmentCount = 0,
+            .pInputAttachments = 0,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = AttachmentReferences,
+            .pResolveAttachments = 0,
+            .pDepthStencilAttachment = 0,
+            .preserveAttachmentCount = 0,
+            .pPreserveAttachments = 0,
+        };
+
+        VkRenderPassCreateInfo RenderPassCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            .pNext = 0,
+            .flags = 0,
+            .attachmentCount = 1,
+            .pAttachments = AttachmentDescriptionsX,
+            .subpassCount = 1,
+            .pSubpasses = &SubpassDescription,
+            .dependencyCount = 0,
+            .pDependencies = 0,
+        };
+
+        VulkanCheckGoto(vkCreateRenderPass(C->Device, &RenderPassCreateInfo, 0, &Object->Framebuffer.RenderPass), label_Error);
+        
+        VkExtent2D Extent = C->DeviceInfo.SurfaceCapabilities.currentExtent;
+        for(u32 I = 0; I < C->SwapchainImageCount; ++I) {
+            VkFramebufferCreateInfo FramebufferCreateInfo = {
+                .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                .pNext = 0,
+                .flags = 0,
+                .renderPass = Object->Framebuffer.RenderPass,
+                .attachmentCount = 1,
+                .pAttachments = C->SwapchainImageViews + I,
+                .width = Extent.width,
+                .height = Extent.height,
+                .layers = 1,
+            };
+
+            VulkanCheckGoto(vkCreateFramebuffer(C->Device, &FramebufferCreateInfo, 0, C->SwapchainFramebuffers + I), label_Error);
+        }
+    } else {
+        u32 AttachmentCount = 0;
+
+        for(u32 I = 0; I < Object->Framebuffer.ColorAttachmentCapacity; ++I) {
+            if(Object->Framebuffer.ColorAttachments[I].Rbo == 0) {
+                AttachmentCount = I;
+                break;
+            }
+        }
+        for(u32 I = AttachmentCount; Object->Framebuffer.ColorAttachmentCapacity; ++I) {
+            // NOTE(blackedout): Bindings to GL_COLOR_ATTACHMENTi must be dense, skipping a binding entirely is currently not allowed
+            Assert(Object->Framebuffer.ColorAttachments[I].Rbo == 0);
+        }
+
+        VkAttachmentDescription DefaultAttachmentDescription = {
+            .flags = 0,
+            .format = C->DeviceInfo.InitialSurfaceFormat.format,
+            .samples = 1,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        };
+
+        AttachmentDescriptions = calloc(AttachmentCount, sizeof(VkAttachmentDescription));
+        if(AttachmentDescriptions == 0) {
+            goto label_Error;
+        }
+        for(u32 I = 0; I < AttachmentCount; ++I) {
+            AttachmentDescriptions[I] = DefaultAttachmentDescription;
+        }
+        
+        ArrayRequireRoom(&C->TmpSubpasses, Object->Framebuffer.Subpasses.Count, sizeof(VkSubpassDescription), 1);
+        for(u32 I = 0; I < Object->Framebuffer.Subpasses.Count; ++I) {
+            render_pass_state_subpass *SrcSubpass = ArrayData(render_pass_state_subpass, Object->Framebuffer.Subpasses) + I;
+            VkSubpassDescription *DstSubpass = ArrayData(VkSubpassDescription, C->TmpSubpasses) + I;
+            VkSubpassDescription SubpassDescription = {
+                .flags = 0,
+                .pipelineBindPoint = 0,
+                .inputAttachmentCount = 0,
+                .pInputAttachments = 0,
+                .colorAttachmentCount = SrcSubpass->ColorAttachmentCount,
+                .pColorAttachments = ArrayData(VkAttachmentReference, Object->Framebuffer.SubpassAttachments) + SrcSubpass->BaseIndex,
+                .pResolveAttachments = 0,
+                .pDepthStencilAttachment = 0,
+                .preserveAttachmentCount = 0,
+                .pPreserveAttachments = 0,
+            };
+            *DstSubpass = SubpassDescription;
+        }
+
+        VkRenderPassCreateInfo RenderPassCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            .pNext = 0,
+            .flags = 0,
+            .attachmentCount = AttachmentCount,
+            .pAttachments = AttachmentDescriptions,
+            .subpassCount = Object->Framebuffer.Subpasses.Count,
+            .pSubpasses = ArrayData(VkSubpassDescription, Object->Framebuffer.Subpasses),
+            .dependencyCount = 0,
+            .pDependencies = 0,
+        };
+
+        VulkanCheckGoto(vkCreateRenderPass(C->Device, &RenderPassCreateInfo, 0, &Object->Framebuffer.RenderPass), label_Error);
+
+        u32 FramebufferCount = 0;
+        VkImageView *ImageViews;
+        VkFramebuffer *Framebuffers;
+        VkExtent2D Extent;
+        if(Fbo == 0) {
+            ImageViews = C->SwapchainImageViews;
+            Framebuffers = C->SwapchainFramebuffers;
+            FramebufferCount = C->SwapchainImageCount;
+            Extent = C->DeviceInfo.SurfaceCapabilities.currentExtent;
+        } else {
+        }
+        
+        VkFramebufferCreateInfo FramebufferCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .pNext = 0,
+            .flags = 0,
+            .renderPass = Object->Framebuffer.RenderPass,
+            .attachmentCount = AttachmentCount,
+            .pAttachments = 0, // TODO(blackedout): Put ImageViews of attachments in contiguous array
+            .width = Extent.width,
+            .height = Extent.height,
+            .layers = 1,
+        };
+
+        VulkanCheckGoto(vkCreateFramebuffer(C->Device, &FramebufferCreateInfo, 0, &Object->Framebuffer.Framebuffer), label_Error);
+    }
+
+
+    int Result = 0;
+    goto label_Exit;
+label_Error:
+    Result = 1;
 label_Exit:
+    free(AttachmentDescriptions);
     return Result;
+}
+
+int PotentiallySaveSubpass(context *C) {
+    object *Object = 0;
+    Assert(0 == CheckObjectTypeGet(C, C->BoundDrawFbo, object_FRAMEBUFFER, &Object));
+
+    if(C->BoundDrawFbo == 0) {
+        if(Object->Framebuffer.Subpasses.Count) {
+            return 0;
+        }
+        Object->Framebuffer.Subpasses.Count++;
+        command Command = {
+            .Type = command_BEGIN_RENDER_PASS,
+            .BeginRenderPass = {
+                .Fbo = C->BoundDrawFbo
+            },
+        };
+        PushCommand(C, Command);
+        return 0;
+    }
+
+    if(Object->Framebuffer.Subpasses.Count) {
+        // NOTE(blackedout): Compare previous subpass to current
+        u32 PrevIndex = Object->Framebuffer.Subpasses.Count - 1;
+        render_pass_state_subpass *PrevSubpass = ArrayData(render_pass_state_subpass, Object->Framebuffer.Subpasses) + PrevIndex;
+        if(PrevSubpass->ColorAttachmentCount != Object->Framebuffer.ColorAttachmentRange) {
+            goto label_NoMatch;
+        }
+
+        VkAttachmentReference *ColorRefs = ArrayData(VkAttachmentReference, Object->Framebuffer.SubpassAttachments) + (u32)PrevSubpass->ColorAttachmentCount;
+        for(u32 I = 0; I < Object->Framebuffer.ColorAttachmentRange; ++I) {
+            framebuffer_attachment *Attachment = Object->Framebuffer.ColorAttachments + I;
+            if(Attachment->IsDrawBuffer) {
+                if(ColorRefs[I].attachment != I) {
+                    goto label_NoMatch;
+                }
+            } else {
+                if(ColorRefs[I].attachment != VK_ATTACHMENT_UNUSED) {
+                    goto label_NoMatch;
+                }
+            }
+        }
+
+        // NOTE(blackedout): Match, do nothing
+        return 0;
+    }
+label_NoMatch:;
+
+    // NOTE(blackedout): Must save
+    u32 AttachmentStartIndex = Object->Framebuffer.SubpassAttachments.Count;
+    ArrayRequireRoom(&Object->Framebuffer.SubpassAttachments, Object->Framebuffer.ColorAttachmentRange, sizeof(VkAttachmentReference), 2);
+
+    VkAttachmentReference *References = ArrayData(VkAttachmentReference, Object->Framebuffer.SubpassAttachments) + AttachmentStartIndex;
+    for(u32 I = 0; I < Object->Framebuffer.ColorAttachmentRange; ++I) {
+        framebuffer_attachment *Attachment = Object->Framebuffer.ColorAttachments + I;
+        if(Attachment->IsDrawBuffer) {
+            References[I].attachment = I;
+            References[I].layout = VK_IMAGE_LAYOUT_GENERAL;
+        } else {
+            References[I].attachment = VK_ATTACHMENT_UNUSED;
+        }
+    }
+    Object->Framebuffer.SubpassAttachments.Count += Object->Framebuffer.ColorAttachmentRange;
+
+    ArrayRequireRoom(&Object->Framebuffer.Subpasses, 1, sizeof(VkSubpassDescription), 1);
+    render_pass_state_subpass *SubpassDescriptions = ArrayData(render_pass_state_subpass, Object->Framebuffer.Subpasses);
+    u32 NewSubpassIndex = Object->Framebuffer.Subpasses.Count++;
+    SubpassDescriptions[NewSubpassIndex].ColorAttachmentCount = Object->Framebuffer.ColorAttachmentRange;
+    SubpassDescriptions[NewSubpassIndex].BaseIndex = AttachmentStartIndex;
+
+    if(NewSubpassIndex == 0) {
+        command Command = {
+            .Type = command_BEGIN_RENDER_PASS,
+            .BeginRenderPass = {
+                .Fbo = C->BoundDrawFbo
+            },
+        };
+        PushCommand(C, Command);
+    } else {
+        command Command = {
+            .Type = command_NEXT_SUBPASS,
+            .NextSubpass = {
+                .SubpassIndex = NewSubpassIndex
+            },
+        };
+        PushCommand(C, Command);
+    }
+
+    return 0;
 }
 
 // NOTE(blackedout): See https://docs.vulkan.org/spec/latest/chapters/limits.html (2025-11-13)
@@ -843,11 +1163,21 @@ static void ConvertProgramShaderStages(context *C, u32 PipelineIndex, VkPipeline
     *OutCount = ShaderStageCount;
 }
 
-int CreatePipeline(context *C, u32 PipelineIndex, VkRenderPass RenderPass) {
+int CheckPipeline(context *C, u32 PipelineIndex) {
     pipeline_state_header *Header = GetPipelineState(C, PipelineIndex, pipeline_state_HEADER);
     if(Header->IsCreated) {
         return 0;
     }
+
+    object *ObjectF = 0;
+    {
+        pipeline_state_framebuffer *State = GetPipelineState(C, PipelineIndex, pipeline_state_HEADER);
+        Assert(0 == CheckObjectTypeGet(C, State->DrawFbo, object_FRAMEBUFFER, &ObjectF));
+
+        // TODO(blackedout): Handle
+        CheckFramebuffer(C, State->DrawFbo);
+    }
+
     Header->Layout = VK_NULL_HANDLE;
     Header->Pipeline = VK_NULL_HANDLE;
 
@@ -972,7 +1302,7 @@ int CreatePipeline(context *C, u32 PipelineIndex, VkRenderPass RenderPass) {
         .pColorBlendState = &PipelineColorBlendStateCreateInfo,
         //.pDynamicState = &PipelineDynamicStateCreateInfo,
         .layout = Header->Layout,
-        .renderPass = RenderPass,
+        .renderPass = ObjectF->Framebuffer.RenderPass,
         .subpass = 0,
         .basePipelineHandle = VK_NULL_HANDLE,
         .basePipelineIndex = -1

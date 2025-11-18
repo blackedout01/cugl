@@ -15,7 +15,9 @@ typedef uint8_t u8;
 typedef uint32_t u32;
 typedef uint64_t u64;
 
-#define StaticAssert(Condition) struct sas_ ## __LINE__ { int A[-((Condition) == 0)]; } 
+#define Concat1(A, B) A ## B
+#define Concat2(A, B) Concat1(A, B)
+#define StaticAssert(Condition) struct Concat2(sas_, __LINE__) { int A[-((Condition) == 0)]; } 
 #define Assert(X) if((X) == 0) __builtin_debugtrap()
 #define ArrayCount(X) (sizeof(X)/sizeof(*(X)))
 #define ClampAB(X, A, B) ((X) < (A) ? (A) : ((X) > (B) ? (B) : (X)))
@@ -28,10 +30,21 @@ typedef struct array {
     u64 Count;
     void *Data;
 } array;
+#define array(T) array
 
 #define ArrayData(Type, Array) ((Type *)((Array).Data))
 int ArrayRequireRoom(array *Array, u64 Count, u64 InstanceByteCount, u64 InitialCapacity);
 void ArrayClear(array *Array, u64 InstanceByteCount);
+
+#if 0
+typedef struct free_array {
+    array Array;
+    u64 FreeCount;
+    u64 NextFreeIndex;
+} free_array;
+
+#define FreeArrayData(Type, FreeArray) ArrayData(Type, (FreeArray).Array)
+#endif
 
 void SetFlagsEnabledU32(u32 *InOut, u32 Mask, int DoEnable);
 void SetFlagsU32(u32 *InOut, u32 Mask, u32 Bits);
@@ -69,6 +82,17 @@ typedef struct shader_type_info {
     VkShaderStageFlags VulkanBit;
 } shader_type_info;
 
+enum color_attachment_info_flags {
+    color_attachment_info_IS_NONE = 0x01,
+    color_attachment_info_IS_INVALID_FOR_DEFAULT_FBO = 0x02,
+    color_attachment_info_IS_INVALID_FOR_OTHER_FBO = 0x04,
+};
+
+typedef struct color_attachment_info {
+    u32 Flags;
+    u32 Index;
+} color_attachment_info;
+
 #define BUFFER_TARGET_COUNT (15)
 #define TEXTURE_SLOT_COUNT (128)
 #define TEXTURE_TARGET_COUNT (11)
@@ -80,6 +104,7 @@ int GetVulkanBlendOp(GLenum mode, VkBlendOp *OutBlendOp);
 int GetVulkanBlendFactor(GLenum factor, VkBlendFactor *OutBlendFactor);
 int GetVertexInputAttributeSizeTypeInfo(GLint Size, GLenum Type, vertex_input_attribute_size_type_info *OutInfo);
 int GetShaderTypeInfo(GLenum type, shader_type_info *OutInfo);
+int GetColorAttachmentInfo(GLenum buf, u32 MaxColorAttachmentCount, color_attachment_info *OutInfo);
 
 // MARK: CORE
 
@@ -115,23 +140,43 @@ typedef struct vertex_array_binding {
 typedef enum object_type {
     object_NONE = 0,
     object_BUFFER,
-    object_TRANSFORM_FEEDBACK,
     object_FRAMEBUFFER,
     object_PROGRAM,
     object_PROGRAM_PIPELINE,
     object_QUERY,
     object_RENDERBUFFER,
-    object_SHADER,
     object_SAMPLER,
+    object_SHADER,
     object_SYNC,
     object_TEXTURE,
+    object_TRANSFORM_FEEDBACK,
     object_VERTEX_ARRAY,
 } object_type;
 
 #define PROGRAM_SHADER_CAPACITY (6)
 
+#if 0
+typedef struct subpass_attachment_reference {
+    // NOTE(blackedout): Index into `Framebuffer.ColorAttachments`
+    // Currently equivalent to the i of GL_COLOR_ATTACHMENTi (GL_NONE is ~0)
+    u32 Key;
+} subpass_attachment_reference;
+#endif
+
+typedef struct render_pass_state_subpass {
+    u32 BaseIndex;
+    u32 ColorAttachmentCount;
+} render_pass_state_subpass;
+
+typedef struct framebuffer_attachment {
+    // NOTE(blackedout): Fetch location is the index of this in the array
+    int IsDrawBuffer;
+    GLuint Rbo;
+} framebuffer_attachment;
+
 typedef struct object {
     object_type Type;
+    int IsCreated;
 
     union {
         struct {
@@ -144,15 +189,22 @@ typedef struct object {
             VmaAllocation StagingAllocation;
         } Buffer;
         struct {
-            VkClearValue ClearValue;
-            uint32_t ColorImageCount;
-            VkImage *ColorImages;
-            VkImageView *ColorImageViews;
-            // NOTE(blackedout): Indices into `ColorImages` that specify which color images are affected by draw operations (such as glClear)
-            // For the default framebuffer, the indices point into the virtual image reference buffer { fromt, back },
-            // because which of these images is front or back potentially changes for each frame.
-            u32 ColorDrawCount;
-            u32 *ColorDrawIndices;
+            VkImage Image;
+            VkImageView ImageView;
+        } Renderbuffer;
+        struct {
+            u32 MaxColorAttachmentRange;
+            // NOTE(blackedout): This value minus 1 is the last attachment that is set. All remaining ones are unused.
+            u32 ColorAttachmentRange;
+            u32 ColorAttachmentCapacity;
+            framebuffer_attachment *ColorAttachments;
+            framebuffer_attachment DepthAttachment;
+            framebuffer_attachment StencilAttachment;
+            
+            array(render_pass_state_subpass) Subpasses;
+            array(VkAttachmentReference) SubpassAttachments;
+            VkRenderPass RenderPass;
+            VkFramebuffer Framebuffer;
         } Framebuffer;
         struct {
             u64 AttachedShaderCount;
@@ -177,7 +229,6 @@ typedef struct object {
             texture_dimension Dimension;
         } Texture;
         struct {
-            VkVertexInputBindingDescription Binding;
             vertex_array_attribute *InputAttributes;
             vertex_array_binding *InputBindings;
         } VertexArray;
@@ -190,6 +241,8 @@ typedef enum command_type {
     command_DRAW,
     command_BIND_VERTEX_BUFFER,
     command_BIND_PIPELINE,
+    command_BEGIN_RENDER_PASS,
+    command_NEXT_SUBPASS
 } command_type;
 
 typedef struct command {
@@ -213,6 +266,12 @@ typedef struct command {
             u64 InstanceCount;
             u64 InstanceOffset;
         } Draw;
+        struct {
+            GLuint Fbo;
+        } BeginRenderPass;
+        struct {
+            u32 SubpassIndex;
+        } NextSubpass;
     };
 } command;
 
@@ -251,21 +310,10 @@ typedef struct device_info {
     VmaAllocationCreateFlags VmaCreateFlags;
 } device_info;
 
-typedef struct swapchain_image {
-    VkImage Image;
-    VkImageView View;
-} swapchain_image;
-
 enum {
     framebuffer_READ = 0,
     framebuffer_WRITE,
     framebuffer_COUNT,
-};
-
-enum {
-    front_back_FRONT = 0,
-    front_back_BACK,
-    front_back_COUNT
 };
 
 enum {
@@ -298,6 +346,7 @@ typedef enum gl_error_type {
     gl_error_PROGRAM_INVALID,
     gl_error_PROGRAM_NOT_LINkED_SUCCESSFULLY,
 
+    gl_error_SHADER_TYPE,
     gl_error_SHADER_IS_PROGRAM,
     gl_error_SHADER_INVALID,
 
@@ -343,6 +392,10 @@ typedef enum gl_error_type {
     gl_error_VERTEX_INPUT_BINDING_INDEX,
     gl_error_VERTEX_INPUT_ATTRIBUTE_STRIDE_NEGATIVE,
     gl_error_VERTEX_INPUT_ATTRIBUTE_STRIDE_MAX,
+
+    gl_error_DRAW_BUFFER_BUF_INVALID,
+    gl_error_DRAW_BUFFER_BUF_INVALID_DEFAULT_FRAMEBUFFER,
+    gl_error_DRAW_BUFFER_BUF_INVALID_OTHER_FRAMEBUFFER,
 
     gl_error_LINE_WIDTH_LE_ZERO,
 
@@ -403,6 +456,7 @@ typedef struct context {
 
     // NOTE(blackedout): Virtual state
     GLuint BoundVao;
+    GLuint BoundReadFbo, BoundDrawFbo;
 
     config Config;
 
@@ -413,11 +467,10 @@ typedef struct context {
     VmaAllocator Allocator;
     VkSwapchainKHR Swapchain;
     u32 SwapchainImageCount;
-    swapchain_image *SwapchainImages;
+    VkImage *SwapchainImages;
+    VkImageView *SwapchainImageViews;
+    VkFramebuffer *SwapchainFramebuffers;
     VkCommandPool GraphicsCommandPool;
-
-    int IsSingleBuffered;
-    u32 CurrentFrontBackIndices[front_back_COUNT];
 
     u32 SemaphoreCount;
     VkSemaphore *Semaphores;
@@ -433,6 +486,8 @@ typedef struct context {
     int IsPipelineSet;
     u32 LastPipelineIndex;
 
+    array TmpSubpasses;
+
     VkVertexInputBindingDescription *VertexInputBindingDescriptions;
     VkVertexInputAttributeDescription *VertexInputAttributeDescriptions;
 } context;
@@ -447,8 +502,16 @@ void GenerateOther(context *C, GLenum Source, const char *Msg);
 int RequireRoomForNewObjects(context *C, u64 Count);
 int RequireRoomForNewCommands(context *C, u64 Count);
 int PushCommand(context *C, command Command);
-int CreateObjects(context *Context, object Template, u64 Count, GLuint *OutHandles);
-int CreateObjectsSizei(context *Context, object Template, GLsizei Count, GLuint *OutHandles);
+
+// NOTE(blackedout): Return the handle of and pointer to a new zeroed out object.
+// IMPORTANT: The caller must ensure there is enough space to perform this operation voa `ArrayRequireRoom`.
+void GenObject(context *C, GLuint *OutHandle, object **OutObject);
+
+// NOTE(blackedout): Create the given object by allocating its dynamic state.
+// IMPORTANT: `Object->Type` must be set before calling this function. `Object->IsCreated` must be zero.
+// Returns one on out of memory error, zero on success.
+int CreateObject(context *C, object *Object);
+
 void DeleteObject(context *C, object *Object);
 void DeleteObjects(context *Context, u64 Count, const GLuint *Handles, object_type ExpectedType);
 void DeleteObjectsSizei(context *Context, GLsizei Count, const GLuint *Handles, object_type ExpectedType);
@@ -469,11 +532,15 @@ void SetVertexInputAttributeBinding(context *C, object *Object, int IsCurrent, u
 void SetVertexInputAttributePointer(context *C, object *Object, u32 Index, GLint Size, GLenum Type, GLsizei Stride, const void *Pointer, u32 IntegerHandlingBits, const char *Name);
 void SetVertexInputAttributeEnabled(context *C, object *Object, int IsCurrent, GLuint Index, int IsEnabled, const char *Name);
 
-GLboolean IsObjectType(GLuint H, object_type Type, const char *Name);
+void NoContextGenObjects(GLsizei Count, object_type Type, GLuint *OutHandles, const char *Name);
+void NoContextCreateObjects(GLsizei Count, object_type Type, GLuint *OutHandles, const char *Name);
+GLboolean NoContextIsObjectType(GLuint H, object_type Type, const char *Name);
 
 void HandledCheckCapSet(context *C, GLenum Cap, int Enabled);
 int VulkanCheck(context *C, VkResult Result, const char *Call);
-int CreateFramebuffer(context *C, u32 ColorImageCount);
+
+int CheckFramebuffer(context *C, GLuint Fbo);
+int PotentiallySaveSubpass(context *C);
 
 typedef struct pipeline_state_header {
     int IsCreated;
@@ -492,7 +559,7 @@ typedef VkViewport pipeline_state_viewport;
 typedef VkRect2D pipeline_state_scissor;
 
 typedef struct pipeline_state_framebuffer {
-    GLuint Fbo;
+    GLuint ReadFbo, DrawFbo;
 } pipeline_state_framebuffer;
 
 typedef struct pipeline_state_draw_buffer {
@@ -534,7 +601,7 @@ void CopyPipelineStateFromPtr(context *C, u64 DstStateIndex, void *SrcState, pip
 
 int UseCurrentPipelineState(context *C, u32 Count, pipeline_state_type *Types);
 void SetDefaultPipelineState(context *C, u32 PipelineIndex);
-int CreatePipeline(context *C, u32 Index, VkRenderPass RenderPass);
+int CheckPipeline(context *C, u32 Index);
 
 // NOTE(blackedout):
 // command categories

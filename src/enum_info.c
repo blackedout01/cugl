@@ -1,3 +1,4 @@
+#include "cugl/cugl.h"
 #include "internal.h"
 #include "vulkan/vulkan_core.h"
 
@@ -148,4 +149,50 @@ int GetShaderTypeInfo(GLenum type, shader_type_info *OutInfo) {
         return 1;
     }
 #undef MakeCase
+}
+
+int GetColorAttachmentInfo(GLenum buf, u32 MaxColorAttachmentCount, color_attachment_info *OutInfo) {
+    if(buf == GL_NONE) {
+        OutInfo->Flags = color_attachment_info_IS_NONE;
+        OutInfo->Index = 0;
+        return 0;
+    }
+
+    StaticAssert(GL_FRONT_LEFT < GL_COLOR_ATTACHMENT0);
+    StaticAssert(GL_FRONT_RIGHT < GL_COLOR_ATTACHMENT0);
+    StaticAssert(GL_BACK_LEFT < GL_COLOR_ATTACHMENT0);
+    StaticAssert(GL_BACK_RIGHT < GL_COLOR_ATTACHMENT0);
+    StaticAssert(GL_FRONT < GL_COLOR_ATTACHMENT0);
+    StaticAssert(GL_BACK < GL_COLOR_ATTACHMENT0);
+    StaticAssert(GL_LEFT < GL_COLOR_ATTACHMENT0);
+    StaticAssert(GL_RIGHT < GL_COLOR_ATTACHMENT0);
+    StaticAssert(GL_FRONT_AND_BACK < GL_COLOR_ATTACHMENT0);
+
+    if(GL_COLOR_ATTACHMENT0 <= buf) {
+        OutInfo->Flags = color_attachment_info_IS_INVALID_FOR_DEFAULT_FBO;
+        if(buf < (GL_COLOR_ATTACHMENT0 + MaxColorAttachmentCount)) {
+            OutInfo->Flags |= color_attachment_info_IS_INVALID_FOR_OTHER_FBO;
+        }
+        OutInfo->Index = buf - GL_COLOR_ATTACHMENT0;
+        return 0;
+    }
+
+    switch(buf) {
+    case GL_FRONT_LEFT:
+    case GL_FRONT_RIGHT:
+    case GL_BACK_LEFT:
+    case GL_BACK_RIGHT:
+    case GL_FRONT:
+    case GL_BACK:
+    case GL_LEFT:
+    case GL_RIGHT:
+    case GL_FRONT_AND_BACK:
+        OutInfo->Flags = color_attachment_info_IS_INVALID_FOR_OTHER_FBO;
+        // TODO(blackedout): Compute index
+        OutInfo->Index = 0;
+        return 0;
+    break;
+    }
+
+    return 1;
 }
