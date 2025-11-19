@@ -22,6 +22,8 @@ typedef uint64_t u64;
 #define ArrayCount(X) (sizeof(X)/sizeof(*(X)))
 #define ClampAB(X, A, B) ((X) < (A) ? (A) : ((X) > (B) ? (B) : (X)))
 #define Clamp01(X) ClampAB(X, 0, 1)
+#define Max(A, B) ((A) > (B) ? (A) : (B))
+#define Min(A, B) ((A) < (B) ? (A) : (B))
 
 // MARK: UTIL
 
@@ -111,6 +113,7 @@ int GetColorAttachmentInfo(GLenum buf, u32 MaxColorAttachmentCount, color_attach
 #define INITIAL_OBJECT_CAPACITY (1024)
 #define INITIAL_COMMAND_CAPACITY (1024)
 #define INITIAL_PIPELINE_STATE_CAPACITY (8)
+#define PIPELINE_UNUSED_SWAP_COUNTER_DELETE (120)
 
 #define VulkanCheckGoto(Call, Label) if(VulkanCheck(C, Call, #Call)) goto Label;
 #define VulkanCheckReturn(Call) if(VulkanCheck(C, Call, #Call)) return;
@@ -191,9 +194,9 @@ typedef struct object {
         struct {
             VkImage Image;
             VkImageView ImageView;
+            VkExtent2D Extent;
         } Renderbuffer;
         struct {
-            u32 MaxColorAttachmentRange;
             // NOTE(blackedout): This value minus 1 is the last attachment that is set. All remaining ones are unused.
             u32 ColorAttachmentRange;
             u32 ColorAttachmentCapacity;
@@ -203,8 +206,13 @@ typedef struct object {
             
             array(render_pass_state_subpass) Subpasses;
             array(VkAttachmentReference) SubpassAttachments;
+            array(render_pass_state_subpass) StoredSubpasses;
+            array(VkAttachmentReference) StoredSubpassAttachments;
             VkRenderPass RenderPass;
             VkFramebuffer Framebuffer;
+            VkRenderPass OldRenderPass;
+            VkFramebuffer OldFramebuffer;
+            VkExtent2D Extent;
         } Framebuffer;
         struct {
             u64 AttachedShaderCount;
@@ -258,7 +266,7 @@ typedef struct command {
             u32 PipelineIndex;
         } BindPipeline;
         struct {
-
+            u32 SubpassIndex;
         } Clear;
         struct {
             u64 VertexCount;
@@ -409,8 +417,12 @@ typedef enum gl_error_type {
     gl_error_COUNT
 } gl_error_type;
 
+enum {
+    pipeline_state_flag_FIXED = 0x01,
+};
+
 typedef enum pipeline_state_type {
-    pipeline_state_HEADER,
+    pipeline_state_HEADER = 0,
     pipeline_state_CLEAR_COLOR,
     pipeline_state_CLEAR_DEPTH,
     pipeline_state_CLEAR_STENCIL,
@@ -426,6 +438,7 @@ typedef enum pipeline_state_type {
     pipeline_state_PROGRAM,
 
     pipeline_state_PRIMITIVE_TYPE,
+    pipeline_state_FLAGS,
 
     pipeline_state_COUNT
 } pipeline_state_type;
@@ -471,6 +484,7 @@ typedef struct context {
     VkImageView *SwapchainImageViews;
     VkFramebuffer *SwapchainFramebuffers;
     VkCommandPool GraphicsCommandPool;
+    u64 SwapCounter;
 
     u32 SemaphoreCount;
     VkSemaphore *Semaphores;
@@ -540,12 +554,13 @@ void HandledCheckCapSet(context *C, GLenum Cap, int Enabled);
 int VulkanCheck(context *C, VkResult Result, const char *Call);
 
 int CheckFramebuffer(context *C, GLuint Fbo);
-int PotentiallySaveSubpass(context *C);
+int PotentiallySaveSubpass(context *C, u32 *OutSubpassIndex);
 
 typedef struct pipeline_state_header {
     int IsCreated;
     VkPipelineLayout Layout;
     VkPipeline Pipeline;
+    u64 LastBoundSwapCounter;
 } pipeline_state_header;
 
 typedef struct pipeline_state_clear_color {
@@ -588,6 +603,8 @@ typedef struct pipeline_state_info_params {
     u32 InstanceByteCount;
     u32 LimitsByteOffset;
 } pipeline_state_info_params;
+
+typedef u8 pipeline_state_flags;
 
 int CreatePipelineStates(context *C, const VkPhysicalDeviceLimits *Limits);
 void *GetPipelineState(context *C, u64 StateIndex, pipeline_state_type Type);

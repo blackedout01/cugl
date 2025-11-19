@@ -2,6 +2,8 @@
 #include "internal.h"
 #include "vulkan/vulkan_core.h"
 
+#include <stdio.h>
+
 void cuglSwapBuffers(void) {
     const char *Name = "cuglSwapBuffers";
     context *C = 0;
@@ -23,13 +25,40 @@ void cuglSwapBuffers(void) {
     VulkanCheckReturn(vkBeginCommandBuffer(C->CommandBuffers[command_buffer_GRAPHICS], &BeginInfo));
 
     VkCommandBuffer GraphicsCommandBuffer = C->CommandBuffers[command_buffer_GRAPHICS];
-    
+    object *ObjectF = 0;
+    GLuint Fbo = 0;
+    u32 PipelineIndex = 0;
     for(u32 I = 0; I < C->Commands.Count; ++I) {
         command *Command = ArrayData(command, C->Commands) + I;
         switch(Command->Type) {
         case command_BIND_PIPELINE: {
+            PipelineIndex = Command->BindPipeline.PipelineIndex;
             pipeline_state_header *Header = GetPipelineState(C, Command->BindPipeline.PipelineIndex, pipeline_state_HEADER);
+            Header->LastBoundSwapCounter = C->SwapCounter;
             vkCmdBindPipeline(GraphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Header->Pipeline);
+        } break;
+        case command_CLEAR: {
+            if(Fbo == 0) {
+                // TOOD(blackedout): Depth, stencil
+                pipeline_state_clear_color *State = GetPipelineState(C, PipelineIndex, pipeline_state_CLEAR_COLOR);
+                VkClearAttachment ClearAttachment = {
+                    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .colorAttachment = 0,
+                    .clearValue.color.float32 = { State->R, State->G, State->B, State->A },
+                };
+                // TODO(blackedout): Clip with scissor
+                VkClearRect ClearRect = {
+                    .rect = {
+                        .offset = { .x = 0, .y = 0 },
+                        .extent = ObjectF->Framebuffer.Extent,
+                    },
+                    .baseArrayLayer = 0,
+                    .layerCount = 1,
+                };
+                vkCmdClearAttachments(GraphicsCommandBuffer, 1, &ClearAttachment, 1, &ClearRect);
+            } else {
+                // TODO(blackedout): Look up draw buffer in subpass state
+            }
         } break;
         case command_BIND_VERTEX_BUFFER: {
             vkCmdBindVertexBuffers(GraphicsCommandBuffer, Command->BindVertexBuffer.BindingIndex, 1, &Command->BindVertexBuffer.Buffer, &Command->BindVertexBuffer.Offset);
@@ -38,7 +67,8 @@ void cuglSwapBuffers(void) {
             vkCmdDraw(GraphicsCommandBuffer, Command->Draw.VertexCount, Command->Draw.InstanceCount, Command->Draw.VertexOffset, Command->Draw.InstanceOffset);
         } break;
         case command_BEGIN_RENDER_PASS: {
-            object *ObjectF = 0;
+            ObjectF = 0;
+            Fbo = Command->BeginRenderPass.Fbo;
             Assert(0 == CheckObjectTypeGet(C, Command->BeginRenderPass.Fbo, object_FRAMEBUFFER, &ObjectF));
             
             VkFramebuffer Framebuffer = VK_NULL_HANDLE;
@@ -63,8 +93,8 @@ void cuglSwapBuffers(void) {
                 .renderArea = {
                     .offset.x = 0,
                     .offset.y = 0,
-                    .extent.width = C->DeviceInfo.SurfaceCapabilities.currentExtent.width,
-                    .extent.height = C->DeviceInfo.SurfaceCapabilities.currentExtent.height,
+                    .extent.width = ObjectF->Framebuffer.Extent.width,
+                    .extent.height = ObjectF->Framebuffer.Extent.height,
                 },
                 .clearValueCount = 1,
                 .pClearValues = &ClearValue,
@@ -163,15 +193,27 @@ void cuglSwapBuffers(void) {
 
     VulkanCheckReturn(vkResetCommandBuffer(C->CommandBuffers[command_buffer_GRAPHICS], 0));
 
+    u32 DeleteCount = 0;
     for(u32 I = 1; I < C->PipelineStates.Count; ++I) {
         pipeline_state_header *Header = GetPipelineState(C, I, pipeline_state_HEADER);
-        vkDestroyPipelineLayout(C->Device, Header->Layout, 0);
-        vkDestroyPipeline(C->Device, Header->Pipeline, 0);
+        u64 UnusedSwapCount = C->SwapCounter - Header->LastBoundSwapCounter;
+        if(UnusedSwapCount > PIPELINE_UNUSED_SWAP_COUNTER_DELETE) {
+            vkDestroyPipelineLayout(C->Device, Header->Layout, 0);
+            vkDestroyPipeline(C->Device, Header->Pipeline, 0);
+            printf("Deleted pipeline %d", (int)I);
+            ++DeleteCount;
+        } else if(DeleteCount) {
+            void *SrcData = GetPipelineState(C, I, pipeline_state_HEADER);
+            void *DstData = GetPipelineState(C, I - DeleteCount, pipeline_state_HEADER);
+            memcpy(DstData, SrcData, C->PipelineStateByteCount);
+        }
     }
+    C->PipelineStates.Count -= DeleteCount;
 
     ArrayClear(&C->Commands, sizeof(command));
     C->LastPipelineIndex = 0;
     C->IsPipelineSet = 0;
+    ++C->SwapCounter;
 }
 
 int cuglCreateContext(const context_create_params *Params) {
@@ -297,11 +339,23 @@ int cuglCreateContext(const context_create_params *Params) {
     {
         GLuint DefaultFbo = 0;
         object *Object = 0;
-        ArrayRequireRoom(&C->Objects, 1, sizeof(object), INITIAL_OBJECT_CAPACITY);
+        ArrayRequireRoom(&C->Objects, 2, sizeof(object), INITIAL_OBJECT_CAPACITY);
         GenObject(C, &DefaultFbo, &Object);
         Assert(DefaultFbo == 0);
         Object->Type = object_FRAMEBUFFER;
         CreateObject(C, Object);
+
+        GLuint DummyRbo = 0;
+        object *ObjectR = 0;
+        GenObject(C, &DummyRbo, &ObjectR);
+        ObjectR->Type = object_RENDERBUFFER;
+        ObjectR->Renderbuffer.Image = VK_NULL_HANDLE;
+        ObjectR->Renderbuffer.ImageView = VK_NULL_HANDLE;
+        ObjectR->Renderbuffer.Extent = C->DeviceInfo.SurfaceCapabilities.currentExtent;
+
+        Object->Framebuffer.ColorAttachments[0].IsDrawBuffer = 1;
+        Object->Framebuffer.ColorAttachments[0].Rbo = DummyRbo;
+        Object->Framebuffer.ColorAttachmentRange = 1;
     }
 
     {
@@ -310,7 +364,6 @@ int cuglCreateContext(const context_create_params *Params) {
         if(C->Semaphores == 0) {
             goto label_Error;
         }
-        
 
         VkSemaphoreCreateInfo SemaphoreCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -790,41 +843,23 @@ void glClear(GLbitfield mask) {
         AspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
     }
 #endif
-
-    // TODO(blackedout): Scissor bounds cleared region?
+    u32 SubpassIndex = 0;
+    CheckGL(PotentiallySaveSubpass(C, &SubpassIndex), gl_error_OUT_OF_MEMORY);
+    // TODO(blackedout): Make pipeline have a is fixed bit for each state type, such that a draw which doesn't use a program
+    // can leave the program state as unset, such that a following draw command is able to edit the program state
+    pipeline_state_type Types[] = {
+        pipeline_state_CLEAR_COLOR,
+        pipeline_state_VIEWPORT,
+        pipeline_state_SCISSOR,
+        pipeline_state_FRAMEBUFFER,
+        pipeline_state_DRAW_BUFFERS,
+    };
+    CheckGL(UseCurrentPipelineState(C, ArrayCount(Types), Types), gl_error_OUT_OF_MEMORY);
 
     command Command = {0};
     Command.Type = command_CLEAR;
+    Command.Clear.SubpassIndex = SubpassIndex;
     PushCommand(C, Command);
-
-#if 0
-    if(mask & GL_COLOR_BUFFER_BIT) {
-        VkImageSubresourceRange ColorSubresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        };
-
-        VkCommandBuffer CommandBuffer = C->SecondaryCommandBuffer;
-        VkImage *ColorImages = Object->Framebuffer.ColorImages;
-        VkClearColorValue *ClearColor = &Object->Framebuffer.ClearValue.color;
-        if(H == 0) {
-            // NOTE(blackedout): Default framebuffer
-            for(u32 I = 0; I < Object->Framebuffer.ColorDrawCount; ++I) {
-                u32 FrontBackIndex = Object->Framebuffer.ColorDrawIndices[I];
-                u32 DrawIndex = C->CurrentFrontBackIndices[FrontBackIndex];
-                vkCmdClearColorImage(CommandBuffer, ColorImages[DrawIndex], VK_IMAGE_LAYOUT_GENERAL, ClearColor, 1, &ColorSubresourceRange);
-            }
-        } else {
-            for(u32 I = 0; I < Object->Framebuffer.ColorDrawCount; ++I) {
-                u32 DrawIndex = Object->Framebuffer.ColorDrawIndices[I];
-                vkCmdClearColorImage(CommandBuffer, ColorImages[DrawIndex], VK_IMAGE_LAYOUT_GENERAL, ClearColor, 1, &ColorSubresourceRange);
-            }
-        }
-    }
-#endif
 }
 void glClearBufferData(GLenum target, GLenum internalformat, GLenum format, GLenum type, const void * data) {}
 void glClearBufferSubData(GLenum target, GLenum internalformat, GLintptr offset, GLsizeiptr size, GLenum format, GLenum type, const void * data) {}
@@ -1219,7 +1254,8 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     pipeline_state_primitive_type *State = GetCurrentPipelineState(C, pipeline_state_PRIMITIVE_TYPE);
     State->Type = mode;
     
-    CheckGL(PotentiallySaveSubpass(C), gl_error_OUT_OF_MEMORY);
+    u32 SubpassIndex = 0;
+    CheckGL(PotentiallySaveSubpass(C, &SubpassIndex), gl_error_OUT_OF_MEMORY);
     pipeline_state_type Types[] = {
         pipeline_state_VIEWPORT,
         pipeline_state_SCISSOR,
@@ -1269,7 +1305,7 @@ void glDrawBuffer(GLenum buf) {
             Object->Framebuffer.ColorAttachments[I].IsDrawBuffer = 0;
         }
         Object->Framebuffer.ColorAttachments[I++].IsDrawBuffer = 1;
-        Object->Framebuffer.MaxColorAttachmentRange = I;
+        Object->Framebuffer.ColorAttachmentRange = I;
         for(; I < Object->Framebuffer.ColorAttachmentCapacity; ++I) {
             Object->Framebuffer.ColorAttachments[I].IsDrawBuffer = 0;
         }

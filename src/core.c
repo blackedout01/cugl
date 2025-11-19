@@ -1,6 +1,7 @@
 #include "cugl/cugl.h"
 #include "internal.h"
 #include "vulkan/vulkan_core.h"
+#include <stdio.h>
 
 context GlobalContext = {0};
 
@@ -625,198 +626,177 @@ int CheckFramebuffer(context *C, GLuint Fbo) {
     Assert(0 == CheckObjectTypeGet(C, Fbo, object_FRAMEBUFFER, &Object));
 
     if(Object->Framebuffer.RenderPass != VK_NULL_HANDLE) {
+        // NOTE(blackedout): Render pass and so saved subpass state does exist, compare to current to evaluate if renderpass recreation is necessary
+        if(Object->Framebuffer.StoredSubpasses.Count != Object->Framebuffer.Subpasses.Count) {
+            goto label_NoMatch;
+        }
+        if(memcmp(Object->Framebuffer.StoredSubpasses.Data, Object->Framebuffer.Subpasses.Data, sizeof(render_pass_state_subpass)*Object->Framebuffer.Subpasses.Count) != 0) {
+            goto label_NoMatch;
+        }
+        if(Object->Framebuffer.StoredSubpassAttachments.Count != Object->Framebuffer.SubpassAttachments.Count) {
+            goto label_NoMatch;
+        }
+        if(memcmp(Object->Framebuffer.StoredSubpassAttachments.Data, Object->Framebuffer.SubpassAttachments.Data, sizeof(VkAttachmentReference)*Object->Framebuffer.SubpassAttachments.Count) != 0) {
+            goto label_NoMatch;
+        }
+
+        // NOTE(blackedout): Match, reset current, keep old one and return
+        ArrayClear(&Object->Framebuffer.Subpasses, sizeof(render_pass_state_subpass));
+        ArrayClear(&Object->Framebuffer.SubpassAttachments, sizeof(VkAttachmentReference));
+
         return 0;
+
+label_NoMatch:;
+        // NOTE(blackedout): Delete previous render pass and framebuffer. But since these might still be used there is a layer of buffering
+        if(Object->Framebuffer.OldFramebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(C->Device, Object->Framebuffer.OldFramebuffer, 0);
+            
+        }
+        Object->Framebuffer.OldFramebuffer = Object->Framebuffer.Framebuffer;
+        Object->Framebuffer.Framebuffer = VK_NULL_HANDLE;
+
+        if(Object->Framebuffer.OldRenderPass != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(C->Device, Object->Framebuffer.OldRenderPass, 0);
+        }
+        Object->Framebuffer.OldRenderPass = Object->Framebuffer.RenderPass;
+        Object->Framebuffer.RenderPass = VK_NULL_HANDLE;
     }
 
+    Assert(Object->Framebuffer.RenderPass == VK_NULL_HANDLE);
+    Assert(Object->Framebuffer.Framebuffer == VK_NULL_HANDLE);
+
     VkAttachmentDescription *AttachmentDescriptions = 0;
-    // NOTE(blackedout): The default framebuffer being a normal framebuffer doesn't work well with Vulkan and it's anger inducing
-    if(Fbo == 0) {
-        VkAttachmentDescription AttachmentDescriptionsX[] = {
-            {
-                .flags = 0,
-                .format = C->DeviceInfo.InitialSurfaceFormat.format,
-                .samples = 1,
-                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            },
-        };
+    VkImageView *ContiguousImageViews = 0;
+    u32 AttachmentCount = 0;
 
-        VkAttachmentReference AttachmentReferences[] = {
-            {
-                .attachment = 0,
-                .layout = VK_IMAGE_LAYOUT_GENERAL
-            },
-        };
+    for(u32 I = 0; I < Object->Framebuffer.ColorAttachmentCapacity; ++I) {
+        if(Object->Framebuffer.ColorAttachments[I].Rbo == 0) {
+            AttachmentCount = I;
+            break;
+        }
+    }
+    for(u32 I = AttachmentCount; I < Object->Framebuffer.ColorAttachmentCapacity; ++I) {
+        // NOTE(blackedout): Bindings to GL_COLOR_ATTACHMENTi must be dense, skipping a binding entirely is currently not allowed
+        Assert(Object->Framebuffer.ColorAttachments[I].Rbo == 0);
+    }
 
+    VkAttachmentDescription DefaultAttachmentDescription = {
+        .flags = 0,
+        .format = C->DeviceInfo.InitialSurfaceFormat.format,
+        .samples = 1,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+
+    AttachmentDescriptions = calloc(AttachmentCount, sizeof(VkAttachmentDescription));
+    if(AttachmentDescriptions == 0) {
+        goto label_Error;
+    }
+    for(u32 I = 0; I < AttachmentCount; ++I) {
+        AttachmentDescriptions[I] = DefaultAttachmentDescription;
+    }
+    
+    ArrayRequireRoom(&C->TmpSubpasses, Object->Framebuffer.Subpasses.Count, sizeof(VkSubpassDescription), 1);
+    for(u32 I = 0; I < Object->Framebuffer.Subpasses.Count; ++I) {
+        render_pass_state_subpass *SrcSubpass = ArrayData(render_pass_state_subpass, Object->Framebuffer.Subpasses) + I;
+        VkSubpassDescription *DstSubpass = ArrayData(VkSubpassDescription, C->TmpSubpasses) + I;
         VkSubpassDescription SubpassDescription = {
             .flags = 0,
-            .pipelineBindPoint = 0,
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
             .inputAttachmentCount = 0,
             .pInputAttachments = 0,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = AttachmentReferences,
+            .colorAttachmentCount = SrcSubpass->ColorAttachmentCount,
+            .pColorAttachments = ArrayData(VkAttachmentReference, Object->Framebuffer.SubpassAttachments) + SrcSubpass->BaseIndex,
             .pResolveAttachments = 0,
             .pDepthStencilAttachment = 0,
             .preserveAttachmentCount = 0,
             .pPreserveAttachments = 0,
         };
+        *DstSubpass = SubpassDescription;
+    }
 
-        VkRenderPassCreateInfo RenderPassCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .attachmentCount = 1,
-            .pAttachments = AttachmentDescriptionsX,
-            .subpassCount = 1,
-            .pSubpasses = &SubpassDescription,
-            .dependencyCount = 0,
-            .pDependencies = 0,
-        };
+    VkRenderPassCreateInfo RenderPassCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .pNext = 0,
+        .flags = 0,
+        .attachmentCount = AttachmentCount,
+        .pAttachments = AttachmentDescriptions,
+        .subpassCount = Object->Framebuffer.Subpasses.Count,
+        .pSubpasses = ArrayData(VkSubpassDescription, C->TmpSubpasses),
+        .dependencyCount = 0,
+        .pDependencies = 0,
+    };
 
-        VulkanCheckGoto(vkCreateRenderPass(C->Device, &RenderPassCreateInfo, 0, &Object->Framebuffer.RenderPass), label_Error);
-        
-        VkExtent2D Extent = C->DeviceInfo.SurfaceCapabilities.currentExtent;
-        for(u32 I = 0; I < C->SwapchainImageCount; ++I) {
-            VkFramebufferCreateInfo FramebufferCreateInfo = {
-                .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                .pNext = 0,
-                .flags = 0,
-                .renderPass = Object->Framebuffer.RenderPass,
-                .attachmentCount = 1,
-                .pAttachments = C->SwapchainImageViews + I,
-                .width = Extent.width,
-                .height = Extent.height,
-                .layers = 1,
-            };
+    VulkanCheckGoto(vkCreateRenderPass(C->Device, &RenderPassCreateInfo, 0, &Object->Framebuffer.RenderPass), label_Error);
 
-            VulkanCheckGoto(vkCreateFramebuffer(C->Device, &FramebufferCreateInfo, 0, C->SwapchainFramebuffers + I), label_Error);
-        }
+    u32 FramebufferCount = 0;
+    VkImageView *ImageViews = 0;
+    VkFramebuffer *Framebuffers = 0;
+    VkExtent2D Extent = { .width = C->DeviceInfo.Properties.limits.maxFramebufferWidth, .height = C->DeviceInfo.Properties.limits.maxFramebufferWidth };
+    if(Fbo == 0) {
+        ImageViews = C->SwapchainImageViews;
+        Framebuffers = C->SwapchainFramebuffers;
+        FramebufferCount = C->SwapchainImageCount;
+        Extent = C->DeviceInfo.SurfaceCapabilities.currentExtent;
     } else {
-        u32 AttachmentCount = 0;
-
+        FramebufferCount = 1;
+        Framebuffers = &Object->Framebuffer.Framebuffer;
+        ContiguousImageViews = calloc(Object->Framebuffer.ColorAttachmentCapacity, sizeof(VkImageView));
         for(u32 I = 0; I < Object->Framebuffer.ColorAttachmentCapacity; ++I) {
-            if(Object->Framebuffer.ColorAttachments[I].Rbo == 0) {
-                AttachmentCount = I;
-                break;
-            }
+            object *ObjectR = 0;
+            Assert(0 == CheckObjectTypeGet(C, Object->Framebuffer.ColorAttachments[I].Rbo, object_RENDERBUFFER, &ObjectR));
+            ContiguousImageViews[I] = ObjectR->Renderbuffer.ImageView;
+            Extent.width = Min(Extent.width, ObjectR->Renderbuffer.Extent.width);
+            Extent.height = Min(Extent.height, ObjectR->Renderbuffer.Extent.height);
         }
-        for(u32 I = AttachmentCount; Object->Framebuffer.ColorAttachmentCapacity; ++I) {
-            // NOTE(blackedout): Bindings to GL_COLOR_ATTACHMENTi must be dense, skipping a binding entirely is currently not allowed
-            Assert(Object->Framebuffer.ColorAttachments[I].Rbo == 0);
-        }
+        ImageViews = ContiguousImageViews;
+    }
+    Object->Framebuffer.Extent = Extent;
 
-        VkAttachmentDescription DefaultAttachmentDescription = {
-            .flags = 0,
-            .format = C->DeviceInfo.InitialSurfaceFormat.format,
-            .samples = 1,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        };
-
-        AttachmentDescriptions = calloc(AttachmentCount, sizeof(VkAttachmentDescription));
-        if(AttachmentDescriptions == 0) {
-            goto label_Error;
-        }
-        for(u32 I = 0; I < AttachmentCount; ++I) {
-            AttachmentDescriptions[I] = DefaultAttachmentDescription;
-        }
-        
-        ArrayRequireRoom(&C->TmpSubpasses, Object->Framebuffer.Subpasses.Count, sizeof(VkSubpassDescription), 1);
-        for(u32 I = 0; I < Object->Framebuffer.Subpasses.Count; ++I) {
-            render_pass_state_subpass *SrcSubpass = ArrayData(render_pass_state_subpass, Object->Framebuffer.Subpasses) + I;
-            VkSubpassDescription *DstSubpass = ArrayData(VkSubpassDescription, C->TmpSubpasses) + I;
-            VkSubpassDescription SubpassDescription = {
-                .flags = 0,
-                .pipelineBindPoint = 0,
-                .inputAttachmentCount = 0,
-                .pInputAttachments = 0,
-                .colorAttachmentCount = SrcSubpass->ColorAttachmentCount,
-                .pColorAttachments = ArrayData(VkAttachmentReference, Object->Framebuffer.SubpassAttachments) + SrcSubpass->BaseIndex,
-                .pResolveAttachments = 0,
-                .pDepthStencilAttachment = 0,
-                .preserveAttachmentCount = 0,
-                .pPreserveAttachments = 0,
-            };
-            *DstSubpass = SubpassDescription;
-        }
-
-        VkRenderPassCreateInfo RenderPassCreateInfo = {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-            .pNext = 0,
-            .flags = 0,
-            .attachmentCount = AttachmentCount,
-            .pAttachments = AttachmentDescriptions,
-            .subpassCount = Object->Framebuffer.Subpasses.Count,
-            .pSubpasses = ArrayData(VkSubpassDescription, Object->Framebuffer.Subpasses),
-            .dependencyCount = 0,
-            .pDependencies = 0,
-        };
-
-        VulkanCheckGoto(vkCreateRenderPass(C->Device, &RenderPassCreateInfo, 0, &Object->Framebuffer.RenderPass), label_Error);
-
-        u32 FramebufferCount = 0;
-        VkImageView *ImageViews;
-        VkFramebuffer *Framebuffers;
-        VkExtent2D Extent;
-        if(Fbo == 0) {
-            ImageViews = C->SwapchainImageViews;
-            Framebuffers = C->SwapchainFramebuffers;
-            FramebufferCount = C->SwapchainImageCount;
-            Extent = C->DeviceInfo.SurfaceCapabilities.currentExtent;
-        } else {
-        }
-        
+    for(u32 I = 0; I < FramebufferCount; ++I) {
         VkFramebufferCreateInfo FramebufferCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .pNext = 0,
             .flags = 0,
             .renderPass = Object->Framebuffer.RenderPass,
-            .attachmentCount = AttachmentCount,
-            .pAttachments = 0, // TODO(blackedout): Put ImageViews of attachments in contiguous array
+            .attachmentCount = 1,
+            .pAttachments = C->SwapchainImageViews + I,
             .width = Extent.width,
             .height = Extent.height,
             .layers = 1,
         };
 
-        VulkanCheckGoto(vkCreateFramebuffer(C->Device, &FramebufferCreateInfo, 0, &Object->Framebuffer.Framebuffer), label_Error);
+        VulkanCheckGoto(vkCreateFramebuffer(C->Device, &FramebufferCreateInfo, 0, Framebuffers + I), label_Error);
     }
 
+    printf("Created RenderPass and Framebuffer\n");
+
+    ArrayRequireRoom(&Object->Framebuffer.StoredSubpasses, Object->Framebuffer.Subpasses.Count, sizeof(render_pass_state_subpass), 2);
+    ArrayRequireRoom(&Object->Framebuffer.StoredSubpassAttachments, Object->Framebuffer.SubpassAttachments.Count, sizeof(VkAttachmentReference), 2);
+    Object->Framebuffer.StoredSubpasses.Count = Object->Framebuffer.Subpasses.Count;
+    Object->Framebuffer.StoredSubpassAttachments.Count = Object->Framebuffer.SubpassAttachments.Count;
+    memcpy(Object->Framebuffer.StoredSubpasses.Data, Object->Framebuffer.Subpasses.Data, sizeof(render_pass_state_subpass)*Object->Framebuffer.Subpasses.Count);
+    memcpy(Object->Framebuffer.StoredSubpassAttachments.Data, Object->Framebuffer.SubpassAttachments.Data, sizeof(VkAttachmentReference)*Object->Framebuffer.SubpassAttachments.Count);
+    ArrayClear(&Object->Framebuffer.Subpasses, sizeof(render_pass_state_subpass));
+    ArrayClear(&Object->Framebuffer.SubpassAttachments, sizeof(VkAttachmentReference));
 
     int Result = 0;
     goto label_Exit;
 label_Error:
     Result = 1;
 label_Exit:
+    free(ContiguousImageViews);
     free(AttachmentDescriptions);
     return Result;
 }
 
-int PotentiallySaveSubpass(context *C) {
+int PotentiallySaveSubpass(context *C, u32 *OutSubpassIndex) {
     object *Object = 0;
     Assert(0 == CheckObjectTypeGet(C, C->BoundDrawFbo, object_FRAMEBUFFER, &Object));
-
-    if(C->BoundDrawFbo == 0) {
-        if(Object->Framebuffer.Subpasses.Count) {
-            return 0;
-        }
-        Object->Framebuffer.Subpasses.Count++;
-        command Command = {
-            .Type = command_BEGIN_RENDER_PASS,
-            .BeginRenderPass = {
-                .Fbo = C->BoundDrawFbo
-            },
-        };
-        PushCommand(C, Command);
-        return 0;
-    }
 
     if(Object->Framebuffer.Subpasses.Count) {
         // NOTE(blackedout): Compare previous subpass to current
@@ -841,6 +821,7 @@ int PotentiallySaveSubpass(context *C) {
         }
 
         // NOTE(blackedout): Match, do nothing
+        *OutSubpassIndex = PrevIndex;
         return 0;
     }
 label_NoMatch:;
@@ -867,6 +848,7 @@ label_NoMatch:;
     SubpassDescriptions[NewSubpassIndex].ColorAttachmentCount = Object->Framebuffer.ColorAttachmentRange;
     SubpassDescriptions[NewSubpassIndex].BaseIndex = AttachmentStartIndex;
 
+    *OutSubpassIndex = NewSubpassIndex;
     if(NewSubpassIndex == 0) {
         command Command = {
             .Type = command_BEGIN_RENDER_PASS,
@@ -900,12 +882,13 @@ static pipeline_state_info_params PipelineStateInfoParams[] = {
     MakeDynamicEntry(pipeline_state_VIEWPORT, pipeline_state_viewport, offsetof(VkPhysicalDeviceLimits,  maxViewports)),
     MakeDynamicEntry(pipeline_state_SCISSOR, pipeline_state_scissor, offsetof(VkPhysicalDeviceLimits,  maxViewports)),
     MakeStaticEntry(pipeline_state_FRAMEBUFFER, pipeline_state_framebuffer),
-    MakeDynamicEntry(pipeline_state_DRAW_BUFFERS, pipeline_state_draw_buffer, offsetof(VkPhysicalDeviceLimits,  maxColorAttachments)),
+    MakeDynamicEntry(pipeline_state_DRAW_BUFFERS, pipeline_state_draw_buffer, offsetof(VkPhysicalDeviceLimits, maxColorAttachments)),
     //MakeStaticEntry(pipeline_state_VERTEX_ARRAY, pipeline_state_vertex_array),
     MakeDynamicEntry(pipeline_state_VERTEX_INPUT_ATTRIBUTES, pipeline_state_vertex_input_attribute, offsetof(VkPhysicalDeviceLimits, maxVertexInputAttributes)),
     MakeDynamicEntry(pipeline_state_VERTEX_INPUT_BINDINGS, pipeline_state_vertex_input_binding, offsetof(VkPhysicalDeviceLimits, maxVertexInputBindings)),
     MakeStaticEntry(pipeline_state_PROGRAM, pipeline_state_program),
     MakeStaticEntry(pipeline_state_PRIMITIVE_TYPE, pipeline_state_primitive_type),
+    MakeDynamicEntry(pipeline_state_FLAGS, pipeline_state_flags, pipeline_state_COUNT),
 
 #undef MakeDynamicEntry
 #undef MakeStaticEntry
@@ -946,6 +929,8 @@ int CreatePipelineStates(context *C, const VkPhysicalDeviceLimits *Limits) {
 }
 
 void *GetPipelineState(context *C, u64 StateIndex, pipeline_state_type Type) {
+    Assert(StateIndex < C->PipelineStates.Count);
+    Assert(Type < pipeline_state_COUNT);
     u8 *Base = ArrayData(u8, C->PipelineStates) + StateIndex*C->PipelineStateByteCount;
     return Base + C->PipelineStateInfos[Type].ByteOffset;
 }
@@ -1015,22 +1000,25 @@ int UseCurrentPipelineState(context *C, u32 TypeCount, pipeline_state_type *Type
         }
     }
 
+    // NOTE(blackedout): Go through each saved pipeline state and check if there exists a match for the current one (index 0).
+    // Match means that all states this usage requests must be equal IF this compared state has been marked as fixed.
+    // If it hasn't been marked as fixed, the pevious usage didn't care about its value, so it can be overwritten by this usage.
     int FoundMatchingPipeline = 0;
     u32 MatchingPipelineIndex = 0;
-    // NOTE(blackedout): First pipeline is the current one
     for(u32 I = 1; I < C->PipelineStates.Count; ++I) {
         int DidMatchAll = 1;
         for(u32 J = 0; J < TypeCount; ++J) {
-            pipeline_state_type Type = Types[J];
-            pipeline_state_info Info = C->PipelineStateInfos[Type];
-            void *State = GetPipelineState(C, I, Type);
-            void *CurrState = GetCurrentPipelineState(C, Type);
-
-            // TODO(blackedout): Take special care of state that has enabled flags, such that the disabled stuff is not actually compared
-
-            if(memcmp(State, CurrState, Info.InstanceCount*Info.InstaceByteCount) != 0) {
-                DidMatchAll = 0;
-                break;
+            pipeline_state_type Type = Types[J];            
+            pipeline_state_flags *Flags = GetPipelineState(C, I, pipeline_state_FLAGS);
+            if(Flags[Type] & pipeline_state_flag_FIXED) {
+                void *State = GetPipelineState(C, I, Type);
+                void *CurrState = GetCurrentPipelineState(C, Type);
+                
+                pipeline_state_info Info = C->PipelineStateInfos[Type];
+                if(memcmp(State, CurrState, Info.InstanceCount*Info.InstaceByteCount) != 0) {
+                    DidMatchAll = 0;
+                    break;
+                }
             }
         }
         if(DidMatchAll) {
@@ -1039,8 +1027,9 @@ int UseCurrentPipelineState(context *C, u32 TypeCount, pipeline_state_type *Type
             break;
         }
     }
-
+    
     if(FoundMatchingPipeline == 0) {
+        // NOTE(blackedout): If no match existed, create a new one, copy all usage state and set fixed flags
         if(ArrayRequireRoom(&C->PipelineStates, 1, C->PipelineStateByteCount, INITIAL_PIPELINE_STATE_CAPACITY)) {
             return 1;
         }
@@ -1054,6 +1043,23 @@ int UseCurrentPipelineState(context *C, u32 TypeCount, pipeline_state_type *Type
             void *State = GetPipelineState(C, MatchingPipelineIndex, Type);
             void *CurrState = GetCurrentPipelineState(C, Type);
             memcpy(State, CurrState, Info.InstanceCount*Info.InstaceByteCount);
+
+            pipeline_state_flags *Flags = GetPipelineState(C, MatchingPipelineIndex, pipeline_state_FLAGS);
+            Flags[Type] |= pipeline_state_flag_FIXED;
+        }
+    } else {
+        // NOTE(blackedout): If a match existed, just copy the parts that were not marked as fixed in the matched state
+        for(u32 I = 0; I < TypeCount; ++I) {
+            pipeline_state_type Type = Types[I];
+            pipeline_state_flags *Flags = GetPipelineState(C, MatchingPipelineIndex, pipeline_state_FLAGS);
+            if((Flags[Type] & pipeline_state_flag_FIXED) == 0) {
+                void *State = GetPipelineState(C, MatchingPipelineIndex, Type);
+                void *CurrState = GetCurrentPipelineState(C, Type);
+                
+                pipeline_state_info Info = C->PipelineStateInfos[Type];
+                memcpy(State, CurrState, Info.InstanceCount*Info.InstaceByteCount);
+                Flags[Type] |= pipeline_state_flag_FIXED;
+            }
         }
     }
 
@@ -1165,10 +1171,6 @@ static void ConvertProgramShaderStages(context *C, u32 PipelineIndex, VkPipeline
 
 int CheckPipeline(context *C, u32 PipelineIndex) {
     pipeline_state_header *Header = GetPipelineState(C, PipelineIndex, pipeline_state_HEADER);
-    if(Header->IsCreated) {
-        return 0;
-    }
-
     object *ObjectF = 0;
     {
         pipeline_state_framebuffer *State = GetPipelineState(C, PipelineIndex, pipeline_state_HEADER);
@@ -1176,6 +1178,10 @@ int CheckPipeline(context *C, u32 PipelineIndex) {
 
         // TODO(blackedout): Handle
         CheckFramebuffer(C, State->DrawFbo);
+    }
+
+    if(Header->IsCreated) {
+        return 0;
     }
 
     Header->Layout = VK_NULL_HANDLE;
@@ -1310,6 +1316,9 @@ int CheckPipeline(context *C, u32 PipelineIndex) {
     ConvertProgramShaderStages(C, PipelineIndex, ShaderStageCreateInfos, &GraphicsPipelineCreateInfo.stageCount);
 
     VulkanCheckGoto(vkCreateGraphicsPipelines(C->Device, VK_NULL_HANDLE, 1, &GraphicsPipelineCreateInfo, 0, &Header->Pipeline), label_Error);
+
+    printf("Created graphics pipeline\n");
+    Header->IsCreated = 1;
 
     Result = 0;
     goto label_Exit;
