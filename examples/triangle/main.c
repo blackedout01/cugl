@@ -11,14 +11,18 @@ void MessageCallbackGL(GLenum source, GLenum type, GLuint id, GLenum severity, G
 
 const char SourceV[] =
 "#version 460\n"
-
+"#define UNI uniform\n"
+"#define LOC(x) layout(location = x)\n"
 "layout(location = 0) in vec2 inPosition;\n"
 "layout(location = 1) in vec3 inColor;\n"
 
 "layout(location = 0) out vec3 fragColor;\n"
 
+"LOC(0) UNI vec2 offset;\n"
+"UNI float zpos;\n"
+
 "void main() {\n"
-"   gl_Position = vec4(inPosition, 0.0, 1.0);\n"
+"    gl_Position = vec4(inPosition + offset, zpos, 1.0);\n"
 "    fragColor = inColor;\n"
 "}\n";
 
