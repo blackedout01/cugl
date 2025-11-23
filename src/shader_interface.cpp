@@ -9,11 +9,37 @@
 #include <cctype>
 #include <cstdint>
 #include <cstring>
-#include <iostream>
+#include <string.h>
 #include <string>
+#include <set>
 #include <vector>
+#include <map>
 
 #define TrueOrReturn1(X) if((X) == 0) return 1
+
+static int GlslangLanguageToType(EShLanguage Language, shader_type *OutType) {
+    switch(Language) {
+#define MakeCase(K, V) case (K): *OutType = (V); return 0;
+    MakeCase(EShLangVertex, shader_VERTEX);
+    MakeCase(EShLangTessControl, shader_TESSELATION_CONTROL);
+    MakeCase(EShLangTessEvaluation, shader_TESSELATION_EVALUATE);
+    MakeCase(EShLangGeometry, shader_GEOMETRY);
+    MakeCase(EShLangFragment, shader_FRAGMENT);
+    MakeCase(EShLangCompute, shader_COMPUTE);
+#if 0
+    MakeCase(EShLangRayGen, shader_);
+    MakeCase(EShLangIntersect, shader_);
+    MakeCase(EShLangAnyHit, shader_);
+    MakeCase(EShLangClosestHit, shader_);
+    MakeCase(EShLangMiss, shader_);
+    MakeCase(EShLangCallable, shader_);
+    MakeCase(EShLangTask, shader_);
+    MakeCase(EShLangMesh, shader_);
+#endif
+    default: return 1;
+#undef MakeCase
+    }
+}
 
 enum token_type {
     token_NAME,
@@ -29,32 +55,20 @@ struct token {
     const uint8_t *End;
 };
 
-enum type {
-    type_NONE = 0,
-    type_FLOAT,
-    type_VEC2,
-    type_VEC3,
-    type_VEC4,
-    type_COUNT
+struct glsl_type_info {
+    const char *Name;
+    uint32_t ByteCount;
 };
 
-const char *TypeStrings[] = {
-    [type_NONE] = "",
-    [type_FLOAT] = "float",
-    [type_VEC2] = "vec2",
-    [type_VEC3] = "vec3",
-    [type_VEC4] = "vec4",
+static glsl_type_info GlslTypeInfos[] = {
+    [glsl_type_NONE] = { "", 0 },
+    [glsl_type_VOID] = { "void", 0 },
+    [glsl_type_FLOAT] = { "float", 4 },
+    [glsl_type_VEC2] = { "vec2", 8 },
+    [glsl_type_VEC3] = { "vec3", 12 },
+    [glsl_type_VEC4] = { "vec4", 16 },
 };
-StaticAssert(ArrayCount(TypeStrings) == type_COUNT);
-
-enum storage_qualifier {
-    storage_qualifier_NONE = 0,
-    storage_qualifier_IN,
-    storage_qualifier_OUT,
-    storage_qualifier_UNIFORM,
-    storage_qualifier_CONST,
-    storage_qualifier_COUNT
-};
+StaticAssert(ArrayCount(GlslTypeInfos) == glsl_type_COUNT);
 
 const char *StorageQualifierStrings[] = {
     [storage_qualifier_NONE] = "",
@@ -77,7 +91,7 @@ struct variable {
     int LayoutSet;
     variable_layout Layout;
     storage_qualifier StorageQualifier;
-    type Type;
+    glsl_type Type;
     uint32_t NameTokenIndex;
 
     uint32_t StartTokenIndex;
@@ -88,6 +102,7 @@ struct parsed_shader {
     int HasProfileDefinition;
     uint32_t ProfileTokenIndex;
     uint32_t VersionEndTokenIndex;
+    uint32_t UniformCount;
     std::vector<variable> GlobalVariables;
 };
 
@@ -214,14 +229,24 @@ static int TokenEquals(const token &Token, const char *String) {
     return strncmp((const char *)Token.Start, String, TokenLength) == 0;
 }
 
-static int TokenEqualsAny(const token &Token, const char **Strings, uint32_t StringCount, uint32_t Offset, uint32_t *OutIndex) {
-    for(uint32_t I = Offset; I < StringCount; ++I) {
-        if(TokenEquals(Token, Strings[I])) {
+static int TokenEqualsAny(const token &Token, void *Strings, uint32_t StringCount, uint32_t FirstIndex, uint32_t StringOffset, uint32_t TypeStride, uint32_t *OutIndex) {
+    u8 *Bytes = (u8 *)Strings;
+    for(uint32_t I = FirstIndex; I < StringCount; ++I) {
+        const char *String = *(char **)(Bytes + I*TypeStride + StringOffset);
+        if(TokenEquals(Token, String)) {
             *OutIndex = I;
             return 1;
         }
     }
     return 0;
+}
+
+static int TokenEqualsAnyString(const token &Token, const char **Strings, uint32_t StringCount, uint32_t FirstIndex, uint32_t *OutIndex) {
+    return TokenEqualsAny(Token, Strings, StringCount, FirstIndex, 0, sizeof(const char *), OutIndex);
+}
+
+static int TokenEqualsGlslType(const token &Token, uint32_t *OutIndex) {
+    return TokenEqualsAny(Token, GlslTypeInfos, glsl_type_COUNT, 1, offsetof(glsl_type_info, Name), sizeof(glsl_type_info), OutIndex);
 }
 
 static int ParseIntAssignment(const std::vector<token> &Tokens, uint32_t *InOutTokenIndex, uint32_t *OutInt) {
@@ -311,15 +336,15 @@ static int ParseVariable(const std::vector<token> &Tokens, uint32_t *InOutTokenI
 
     uint32_t MatchIndex = 0;
     Var.StorageQualifier = storage_qualifier_NONE;
-    if(TokenEqualsAny(Tokens[I], StorageQualifierStrings, storage_qualifier_COUNT, 1, &MatchIndex)) {
+    if(TokenEqualsAnyString(Tokens[I], StorageQualifierStrings, storage_qualifier_COUNT, 1, &MatchIndex)) {
         Var.StorageQualifier = (storage_qualifier)MatchIndex;
         ++I;
         TrueOrReturn1(I < Tokens.size());
     }
     
-    Var.Type = type_NONE;
-    if(TokenEqualsAny(Tokens[I], TypeStrings, type_COUNT, 1, &MatchIndex)) {
-        Var.Type = (type)MatchIndex;
+    Var.Type = glsl_type_NONE;
+    if(TokenEqualsGlslType(Tokens[I], &MatchIndex)) {
+        Var.Type = (glsl_type)MatchIndex;
         ++I;
         TrueOrReturn1(I < Tokens.size());
     } else {
@@ -348,7 +373,7 @@ static int ParseFunction(const std::vector<token> &Tokens, uint32_t *InOutTokenI
     TrueOrReturn1(I < Tokens.size() && Tokens[I].Type == token_NAME);
 
     uint32_t MatchIndex = 0;
-    TrueOrReturn1(TokenEqualsAny(Tokens[I], TypeStrings, type_COUNT, 1, &MatchIndex) || TokenEquals(Tokens[I], "void"));
+    TrueOrReturn1(TokenEqualsGlslType(Tokens[I], &MatchIndex));
     ++I;
     TrueOrReturn1(I < Tokens.size());
 
@@ -403,7 +428,7 @@ static void ParseProgramGlobals(const std::vector<token> &Tokens, parsed_shader 
             OutParsed.VersionEndTokenIndex = I;
             uint32_t ProfileIndex = 0;
             const char *ProfileStrings[] = { "core", "compatibility", "es" };
-            if(I < Tokens.size() && Tokens[I].Type == token_NAME && TokenEqualsAny(Tokens[I], ProfileStrings, 3, 0, &ProfileIndex)) {
+            if(I < Tokens.size() && Tokens[I].Type == token_NAME && TokenEqualsAnyString(Tokens[I], ProfileStrings, 3, 0, &ProfileIndex)) {
                 OutParsed.ProfileTokenIndex = I;
                 OutParsed.HasProfileDefinition = 1;
                 ++I;
@@ -417,6 +442,9 @@ static void ParseProgramGlobals(const std::vector<token> &Tokens, parsed_shader 
     while(I < Tokens.size()) {
         if(0 == ParseVariable(Tokens, &I, Var)) {
             OutParsed.GlobalVariables.push_back(Var);
+            if(Var.StorageQualifier == storage_qualifier_UNIFORM) {
+                ++OutParsed.UniformCount;
+            }
         } else if(0 == ParseFunction(Tokens, &I)) {
             int X = 0;
         } else {
@@ -428,7 +456,7 @@ static void ParseProgramGlobals(const std::vector<token> &Tokens, parsed_shader 
     return;
 }
 
-static void MakeVulkanCompatible(const std::vector<token> &Tokens, const parsed_shader &ParsedShader, std::string &Out) {
+static void MakeVulkanCompatible(shader_type ShaderType, const std::vector<token> &Tokens, const parsed_shader &ParsedShader, std::string &Out, uniform_variable *Uniforms, uint32_t UniformCount) {
     // NOTE(blackedout): IMPORTANT: `GlobalVariables` are expected to be in the order they are found in the program.
 
     Out.clear();
@@ -444,17 +472,22 @@ static void MakeVulkanCompatible(const std::vector<token> &Tokens, const parsed_
     std::set<std::string> UniformNameSet;
     int HasUniformContents = 0;
     std::string UniformString = "layout(binding=0) uniform ubo {\n";
+    for(uint32_t I = 0; I < UniformCount; ++I) {
+        HasUniformContents = 1;
+        auto &Var = ParsedShader.GlobalVariables[Uniforms[I].VariableIndices[ShaderType]];
+        glsl_type_info TypeInfo = GlslTypeInfos[Uniforms[I].Type];
+        
+        UniformString.append(TypeInfo.Name);
+        UniformString += ' ';
+        UniformString.append(Uniforms[I].Name);
+        UniformString += ';';
+        UniformString += '\n';
+
+        UniformNameSet.insert(std::string(Uniforms[I].Name));
+    }
     for(auto &Var : ParsedShader.GlobalVariables) {
         if(Var.StorageQualifier == storage_qualifier_UNIFORM) {
-            HasUniformContents = 1;
-            // TODO(blackedout): -1 in the first one is potentially not good
-            auto &TypeToken = Tokens[Var.NameTokenIndex - 1];
-            auto &NameToken = Tokens[Var.NameTokenIndex];
-            auto &EndToken = Tokens[Var.StartTokenIndex + Var.TokenLength - 1];
-            UniformString.append(TypeToken.Start, EndToken.End);
-            UniformString += '\n';
-
-            UniformNameSet.insert(std::string(NameToken.Start, NameToken.End));
+            
         }
     }
     UniformString += "} Ubo;\n";
@@ -497,7 +530,7 @@ static void MakeVulkanCompatible(const std::vector<token> &Tokens, const parsed_
     AppendTokensUntil(TokenIndex, Tokens.size());
 }
 
-int GlslangShaderCreateAndParse(shader_type Type, const char *SourceBytes, uint64_t SourceByteCount, glslang_shader *OutShader) {
+int GlslangShaderCreateAndParse(shader_type Type, const char *Source, uint64_t SourceLength, glslang_shader *OutShader) {
     EShLanguage Language;
 #define MakeCase(Key, Value) case (Key): Language = (Value); break
     switch(Type) {
@@ -513,71 +546,26 @@ int GlslangShaderCreateAndParse(shader_type Type, const char *SourceBytes, uint6
 #undef MakeCase
 
     const int DefaultVersion = 460;
-    const bool ForwardCompatible = false;
-    const bool ForceDefaultVersionAndProfile = false;
-    glslang::EShClient Client = glslang::EShClientOpenGL;
-    glslang::EShTargetClientVersion ClientVersion = glslang::EShTargetOpenGL_450;
     const EShMessages Messages = EShMsgDefault;
-    const EProfile DefaultProfile = ECoreProfile;
-    DirStackFileIncluder Includer;
     const TBuiltInResource *DefaultResources = GetDefaultResources();
-
-    #if 0
-    CallbackIncluder callbackIncluder(input->callbacks, input->callbacks_ctx);
-    glslang::TShader::Includer& Includer = (input->callbacks.include_local||input->callbacks.include_system)
-        ? static_cast<glslang::TShader::Includer&>(callbackIncluder)
-        : static_cast<glslang::TShader::Includer&>(dirStackFileIncluder);
-    #endif
 
     // TODO(blackedout): better exception handling
     try {
-        glslang::TShader *Shader = new glslang::TShader(Language);
-        *OutShader = (glslang_shader)Shader;
+        glslang_shader Shader = {};
+        const auto GlslangShader = new glslang::TShader(Language);
+        Shader.Native = GlslangShader;
+        Shader.Source = Source;
+        Shader.SourceLength = SourceLength;
 
-        // NOTE(blackedout): First, parse to validate
-        Shader->setStrings(&SourceBytes, 1);
-        Shader->setEnvInput(glslang::EShSourceGlsl, Language, Client, DefaultVersion);
-        Shader->setEnvClient(Client, ClientVersion);
-        Shader->setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
-        Shader->setAutoMapLocations(true);
+        // NOTE(blackedout): Parse to validate
+        GlslangShader->setStrings(&OutShader->Source, 1);
+        GlslangShader->setEnvInput(glslang::EShSourceGlsl, Language, glslang::EShClientOpenGL, DefaultVersion);
+        GlslangShader->setEnvClient(glslang::EShClientOpenGL, glslang::EShTargetOpenGL_450);
+        GlslangShader->setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
+        GlslangShader->setAutoMapLocations(true);
 
-        if(!Shader->parse(DefaultResources, DefaultVersion, ForwardCompatible, Messages)) {
-            return glslang_error_COMPILATION_FAILED;
-        }
-
-        // NOTE(blackedout): Now modify the program to be Vulkan compatible
-        std::string PreprocessedSource;
-        if(!Shader->preprocess(DefaultResources, DefaultVersion, ECoreProfile, ForceDefaultVersionAndProfile, ForwardCompatible, Messages, &PreprocessedSource, Includer)) {
-            return glslang_error_COMPILATION_FAILED;
-        }
-        
-        std::vector<token> Tokens;
-        parsed_shader ParsedShader = {};
-        LexProgram(PreprocessedSource.c_str(), PreprocessedSource.length(), Tokens);
-        ParseProgramGlobals(Tokens, ParsedShader);
-        std::string Transformed;
-        MakeVulkanCompatible(Tokens, ParsedShader, Transformed);
-
-        std::cout << "Transformed shader code:" << std::endl;
-        std::cout << Transformed << std::endl;
-        
-        // TODO(blackedout): How to reset the shader???
-        Shader->~TShader();
-        new(Shader) glslang::TShader(Language);
-
-        Client = glslang::EShClientVulkan;
-        ClientVersion = glslang::EShTargetVulkan_1_0;
-        const char *TransformedC = Transformed.c_str();
-        Shader->setStrings(&TransformedC, 1);
-        Shader->setEnvInput(glslang::EShSourceGlsl, Language, Client, DefaultVersion);
-        Shader->setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
-        Shader->setEnvClient(Client, ClientVersion);
-        //Shader->setAutoMapLocations(false);
-
-        //const char *PreprocessedSourcePointer = PreprocessedSource.c_str();
-        //Shader->setStrings(&PreprocessedSourcePointer, 1);
-        
-        if(!Shader->parse(DefaultResources, DefaultVersion, ForwardCompatible, Messages)) {
+        *OutShader = Shader;
+        if(!GlslangShader->parse(DefaultResources, DefaultVersion, false, Messages)) {
             return glslang_error_COMPILATION_FAILED;
         }
     } catch (...) {
@@ -587,9 +575,10 @@ int GlslangShaderCreateAndParse(shader_type Type, const char *SourceBytes, uint6
     return glslang_error_NONE;
 }
 
-int GlslangShaderGetLog(glslang_shader Shader, uint64_t *OutLength, const char **OutString) {
+int GlslangShaderGetLog(glslang_shader *Shader, uint64_t *OutLength, const char **OutString) {
     try {
-        auto Info = ((glslang::TShader *)Shader)->getInfoLog();
+        auto GlslangShader = (glslang::TShader *)Shader->Native;
+        auto Info = GlslangShader->getInfoLog();
 
         *OutLength = strlen(Info);
         *OutString = Info;
@@ -599,32 +588,230 @@ int GlslangShaderGetLog(glslang_shader Shader, uint64_t *OutLength, const char *
     return glslang_error_NONE;
 }
 
-void GlslangShaderDelete(glslang_shader Shader) {
-    delete ((glslang::TShader *)Shader);
+void GlslangShaderDelete(glslang_shader *Shader) {
+    auto GlslangShader = (glslang::TShader *)Shader->Native;
+    delete GlslangShader;
+    free((void *)Shader->Source);
+    free((void *)Shader->SpirvBytes);
+    free((void *)Shader->Variables);
+    glslang_shader EmptyShader = {};
+    *Shader = EmptyShader;
 }
 
 int GlslangProgramCreate(glslang_program *OutProgram) {
     try {
-        *OutProgram = (glslang_program)new glslang::TProgram();
+        glslang_program Program = {};
+        Program.Native = new glslang::TProgram();
+        *OutProgram = Program;
     } catch(...) {
         return glslang_error_EXCEPTION;
     }
     return glslang_error_NONE;
 }
 
-int GlslangProgramAddShader(glslang_program Program, glslang_shader Shader) {
+int GlslangProgramAddShader(glslang_program *Program, glslang_shader *Shader) {
     try {
-        ((glslang::TProgram *)Program)->addShader((glslang::TShader *)Shader);
+        auto GlslangProgram = (glslang::TProgram *)Program->Native;
+        auto GlslangShader = (glslang::TShader *)Shader->Native;
+        //GlslangProgram->addShader(GlslangShader);
+        shader_type Type;
+        Assert(0 == GlslangLanguageToType(GlslangShader->getStage(), &Type));
+        Program->AttachedShaders[Type] = Shader;
     } catch(...) {
         return glslang_error_EXCEPTION;
     }
     return glslang_error_NONE;
 }
 
-int GlslangProgramLink(glslang_program Program) {
+int GlslangProgramLink(glslang_program *Program) {
     const EShMessages Messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
+    const int DefaultVersion = 460;
+    const bool ForwardCompatible = false;
+    const bool ForceDefaultVersionAndProfile = false;
+    const EProfile DefaultProfile = ECoreProfile;
     try {
-        if(!((glslang::TProgram *)Program)->link(Messages)) {
+        const TBuiltInResource *DefaultResources = GetDefaultResources();
+        std::vector<token> ShaderTokens[shader_COUNT];
+        parsed_shader ParsedShaders[shader_COUNT] = {};
+        std::string PreprocessedSources[shader_COUNT];
+        for(uint32_t I = 0; I < shader_COUNT; ++I) {
+            glslang_shader *Shader = Program->AttachedShaders[I];
+            if(Shader == 0) {
+                continue;
+            }
+
+            const auto GlslangShader = (glslang::TShader *)Shader->Native;
+            const char *Source = Shader->Source;
+            uint64_t SourceLength = Shader->SourceLength;
+
+            #if 0
+            CallbackIncluder callbackIncluder(input->callbacks, input->callbacks_ctx);
+            glslang::TShader::Includer& Includer = (input->callbacks.include_local||input->callbacks.include_system)
+                ? static_cast<glslang::TShader::Includer&>(callbackIncluder)
+                : static_cast<glslang::TShader::Includer&>(dirStackFileIncluder);
+            #endif
+
+            DirStackFileIncluder Includer;
+            // NOTE(blackedout): Now modify the program to be Vulkan compatible
+            std::string &PreprocessedSource = PreprocessedSources[I];
+            if(!GlslangShader->preprocess(DefaultResources, DefaultVersion, ECoreProfile, ForceDefaultVersionAndProfile, ForwardCompatible, Messages, &PreprocessedSource, Includer)) {
+                return glslang_error_COMPILATION_FAILED;
+            }
+            
+            std::vector<token> &Tokens = ShaderTokens[I];
+            parsed_shader &ParsedShader = ParsedShaders[I];
+            LexProgram(PreprocessedSource.c_str(), PreprocessedSource.length(), Tokens);
+            ParseProgramGlobals(Tokens, ParsedShader);
+
+            Shader->VariableCount = ParsedShader.GlobalVariables.size();
+            Shader->Variables = (decltype(Shader->Variables))calloc(Shader->VariableCount, sizeof(shader_variable));
+            if(Shader->Variables == 0) {
+                return glslang_error_OUT_OF_MEMORY;
+            }
+
+            uint32_t NameBufByteCount = 0;
+            for(uint32_t I = 0; I < ParsedShader.GlobalVariables.size(); ++I) {
+                auto &Var = ParsedShader.GlobalVariables[I];
+                token &NameToken = Tokens[Var.NameTokenIndex];
+                auto NameLength = NameToken.End - NameToken.Start;
+                NameBufByteCount += NameLength + 1;
+            }
+
+            // TOOD(blackedout): Fix leaks
+
+            Shader->NameBuf = (decltype(Shader->NameBuf))calloc(NameBufByteCount, 1);
+            if(Shader->NameBuf == 0) {
+                return glslang_error_OUT_OF_MEMORY;
+            }
+
+            char *NameIt = Shader->NameBuf;
+            for(uint32_t I = 0; I < ParsedShader.GlobalVariables.size(); ++I) {
+                auto &Var = ParsedShader.GlobalVariables[I];
+                shader_variable DstVar = {
+                    .Name = NameIt,
+                    .Location = Var.LayoutSet && Var.Layout.LocationSet ? (int)Var.Layout.Location : -1,
+                    .StorageQualifier = Var.StorageQualifier,
+                    .Type = Var.Type
+                };
+                token &NameToken = Tokens[Var.NameTokenIndex];
+                auto NameLength = NameToken.End - NameToken.Start;
+                memcpy(NameIt, NameToken.Start, NameLength);
+                NameIt += NameLength + 1;
+
+                Shader->Variables[I] = DstVar;
+            }
+        }
+
+        struct cstr_cmp {
+            bool operator()(const char *A, const char *B) const {
+                return strcmp(A, B) < 0;
+            }
+        };
+        
+        std::set<int> UniformLocations;
+        std::map<const char *, size_t, cstr_cmp> UniformNames;
+        std::vector<uniform_variable> Uniforms;
+        for(uint32_t I = 0; I < shader_COUNT; ++I) {
+            glslang_shader *Shader = Program->AttachedShaders[I];
+            if(Shader == 0) {
+                continue;
+            }
+
+            for(uint32_t J = 0; J < Shader->VariableCount; ++J) {
+                shader_variable &Var = Shader->Variables[J];
+                if(Var.StorageQualifier != storage_qualifier_UNIFORM) {
+                    continue;
+                }
+                uniform_variable *UniformVariable = 0;
+                auto It = UniformNames.find(Var.Name);
+                if(It != UniformNames.end()) {
+                    UniformVariable = Uniforms.data() + It->second;
+
+                    if(UniformVariable->Location == -1) {
+                        UniformVariable->Location = Var.Location;
+                    }
+                } else {
+                    uniform_variable NewUniformVariable = {
+                        .Location = Var.Location,
+                        .Name = Var.Name,
+                        .Type = Var.Type,
+                    };
+                    Uniforms.push_back(NewUniformVariable);
+                    UniformNames[NewUniformVariable.Name] = Uniforms.size() - 1;
+                    UniformVariable = Uniforms.data() + (Uniforms.size() - 1);
+                }
+                if(UniformVariable->Location != -1) {
+                    UniformLocations.insert(UniformVariable->Location);
+                    // TODO(blackedout): Set all array locations?
+                }
+                
+                UniformVariable->VariableIndices[I] = J;
+            }
+        }
+
+        // NOTE(blackedout): Set remaining uniform locations
+        int MinLocation = 0;
+        for(auto &Uniform : Uniforms) {
+            if(Uniform.Location != -1) {
+                continue;
+            }
+
+            while(UniformLocations.find(MinLocation) != UniformLocations.end()) {
+                ++MinLocation;
+            }
+            Uniform.Location = MinLocation;
+            ++MinLocation;
+        }
+
+        std::sort(Uniforms.begin(), Uniforms.end(), [](const uniform_variable &Lhs, const uniform_variable &Rhs) {
+            return Lhs.Location < Rhs.Location;
+        });
+
+        const auto GlslangProgram = (glslang::TProgram *)Program->Native;
+        Program->Uniforms = (decltype(Program->Uniforms))calloc(Uniforms.size(), sizeof(uniform_variable));
+        if(Program->Uniforms == 0) {
+            return glslang_error_OUT_OF_MEMORY;
+        }
+        Program->UniformCount = Uniforms.size();
+        memcpy(Program->Uniforms, Uniforms.data(), Uniforms.size()*sizeof(uniform_variable));
+        for(uint32_t I = 0; I < shader_COUNT; ++I) {
+            glslang_shader *Shader = Program->AttachedShaders[I];
+            if(Shader == 0) {
+                continue;
+            }
+
+            {
+                std::string Transformed;
+                MakeVulkanCompatible((shader_type)I, ShaderTokens[I], ParsedShaders[I], Transformed, Program->Uniforms, Program->UniformCount);
+
+                Shader->SourceLength = Transformed.length();
+                Shader->Source = (decltype(Shader->Source))calloc(Shader->SourceLength + 1, 1);
+                if(Shader->Source == 0) {
+                    return glslang_error_OUT_OF_MEMORY;
+                }
+                memcpy((char *)Shader->Source, Transformed.c_str(), Shader->SourceLength);
+            }
+
+            printf("Transformed shader code:\n%.*s\n", (int)Shader->SourceLength, Shader->Source);
+            
+            // TODO(blackedout): How to reset the shader???
+            const auto GlslangShader = (glslang::TShader *)Shader->Native;
+            const auto Language = GlslangShader->getStage();
+            GlslangShader->~TShader();
+            new(GlslangShader) glslang::TShader(Language);
+            
+            GlslangShader->setStrings((const char **)&Shader->Source, 1);
+            GlslangShader->setEnvInput(glslang::EShSourceGlsl, Language, glslang::EShClientVulkan, DefaultVersion);
+            GlslangShader->setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetSpv_1_0);
+            GlslangShader->setEnvClient(glslang::EShClientVulkan, glslang::EShTargetVulkan_1_0);
+
+            if(!GlslangShader->parse(DefaultResources, DefaultVersion, ForwardCompatible, EShMsgDefault)) {
+                return glslang_error_COMPILATION_FAILED;
+            }
+            GlslangProgram->addShader(GlslangShader);
+        }
+        
+        if(!GlslangProgram->link(Messages)) {
             return glslang_error_LINKAGE_FAILED;
         }
     } catch(...) {
@@ -633,9 +820,10 @@ int GlslangProgramLink(glslang_program Program) {
     return glslang_error_NONE;
 }
 
-int GlslangProgramGetLog(glslang_program Program, uint64_t *OutLength, const char **OutString) {
+int GlslangProgramGetLog(glslang_program *Program, uint64_t *OutLength, const char **OutString) {
     try {
-        auto Info = ((glslang::TProgram *)Program)->getInfoLog();
+        const auto GlslangProgram = (glslang::TProgram *)Program->Native;
+        auto Info = GlslangProgram->getInfoLog();
 
         *OutLength = strlen(Info);
         *OutString = Info;
@@ -645,29 +833,35 @@ int GlslangProgramGetLog(glslang_program Program, uint64_t *OutLength, const cha
     return glslang_error_NONE;
 }
 
-int GlslangProgramGetLocation(glslang_program Program, const char *Name, int *OutLocation) {
+int GlslangProgramGetLocation(glslang_program *Program, const char *Name, int *OutLocation) {
     try {
-        ((glslang::TProgram *)Program)->buildReflection();
-        *OutLocation = ((glslang::TProgram *)Program)->getReflectionIndex(Name);
+        const auto GlslangProgram = (glslang::TProgram *)Program->Native;
+        GlslangProgram->buildReflection();
+        *OutLocation = GlslangProgram->getReflectionIndex(Name);
     } catch(...) {
         return glslang_error_EXCEPTION;
     }
     return glslang_error_NONE;
 }
 
-void GlslangProgramDelete(glslang_program Program) {
-    delete ((glslang::TProgram *)Program);
+void GlslangProgramDelete(glslang_program *Program) {
+
+    const auto GlslangProgram = (glslang::TProgram *)Program->Native;
+    delete GlslangProgram;
+    glslang_program EmptyProgram = {};
+    *Program = EmptyProgram;
 }
 
-int GlslangGetSpirv(glslang_program Program, glslang_shader Shader, unsigned char **OutBytes, uint64_t *OutByteCount) {
+int GlslangGetSpirv(glslang_program *Program, glslang_shader *Shader, unsigned char **OutBytes, uint64_t *OutByteCount) {
     try {
         spv::SpvBuildLogger logger;
 
-        glslang::TProgram *P = (glslang::TProgram *)Program;
-        P->buildReflection();
-        printf("Num uniform variables: %d\n", P->getNumUniformVariables());
+        const auto GlslangProgram = (glslang::TProgram *)Program->Native;
+        //GlslangProgram->buildReflection();
+        //printf("Num uniform variables: %d\n", GlslangProgram->getNumUniformVariables());
 
-        glslang::TIntermediate *Intermediate = ((glslang::TProgram *)Program)->getIntermediate(((glslang::TShader *)Shader)->getStage());
+        const auto GlslangShader = (glslang::TShader *)Shader->Native;
+        glslang::TIntermediate *Intermediate = GlslangProgram->getIntermediate(GlslangShader->getStage());
 
         glslang::SpvOptions SpvOptions;
         SpvOptions.validate = true;
@@ -682,8 +876,6 @@ int GlslangGetSpirv(glslang_program Program, glslang_shader Shader, unsigned cha
         memcpy(Data, spirv.data(), ByteCount);
 
         //printf("%s\n", logger.getAllMessages().c_str());
-
-        
 
         *OutBytes = Data;
         *OutByteCount = ByteCount;

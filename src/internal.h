@@ -358,6 +358,8 @@ typedef enum gl_error_type {
     gl_error_SHADER_IS_PROGRAM,
     gl_error_SHADER_INVALID,
 
+    gl_error_SHADER_SOURCE_COUNT_NEGATIVE,
+
     gl_error_VERTEX_ATTRIB_FORMAT_NONE_BOUND,
     gl_error_VERTEX_ARRAY_ATTRIB_FORMAT_VAO_INVALID,
     gl_error_VERTEX_ARRAY_ATTRIB_FORMAT_INDEX,

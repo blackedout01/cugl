@@ -32,6 +32,8 @@ const char SourceF[] =
 "layout(location = 0) in vec3 fragColor;\n"
 "layout(location = 0) out vec4 outColor;\n"
 
+"uniform vec2 offset;\n"
+
 "void main() {\n"
 "    outColor = vec4(fragColor, 1.0);\n"
 "}\n";

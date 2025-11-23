@@ -1509,7 +1509,7 @@ void glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei * length, GLch
 
     u64 Length = 0;
     const char *Log = 0;
-    GlslangProgramGetLog(Object->Program.GlslangProgram, &Length, &Log);
+    GlslangProgramGetLog(&Object->Program.GlslangProgram, &Length, &Log);
 
     u64 InfoLogCopyLength = bufSize < Length ? bufSize : Length;
     memcpy(infoLog, Log, InfoLogCopyLength);
@@ -1544,7 +1544,7 @@ void glGetProgramiv(GLuint program, GLenum pname, GLint * params) {
     case GL_INFO_LOG_LENGTH: {
         u64 Length = 0;
         const char *Log = 0;
-        GlslangProgramGetLog(Object->Program.GlslangProgram, &Length, &Log);
+        GlslangProgramGetLog(&Object->Program.GlslangProgram, &Length, &Log);
         *params = Length;
     } break;
     case GL_ATTACHED_SHADERS: {
@@ -1590,7 +1590,7 @@ void glGetShaderInfoLog(GLuint shader, GLsizei bufSize, GLsizei * length, GLchar
 
     u64 Length = 0;
     const char *Log = 0;
-    GlslangShaderGetLog(Object->Shader.GlslangShader, &Length, &Log);
+    GlslangShaderGetLog(&Object->Shader.GlslangShader, &Length, &Log);
 
     u64 InfoLogCopyLength = bufSize < Length ? bufSize : Length;
     memcpy(infoLog, Log, InfoLogCopyLength);
@@ -1625,7 +1625,7 @@ void glGetShaderiv(GLuint shader, GLenum pname, GLint * params) {
     case GL_INFO_LOG_LENGTH: {
         u64 Length = 0;
         const char *Log = 0;
-        GlslangShaderGetLog(Object->Shader.GlslangShader, &Length, &Log);
+        GlslangShaderGetLog(&Object->Shader.GlslangShader, &Length, &Log);
         *params = Length;
     } break;
     case GL_SHADER_SOURCE_LENGTH: {
@@ -1679,7 +1679,7 @@ GLint glGetUniformLocation(GLuint program, const GLchar * name) {
         return Result;
     }
 
-    GlslangProgramGetLocation(Object->Program.GlslangProgram, name, &Result);
+    GlslangProgramGetLocation(&Object->Program.GlslangProgram, name, &Result);
     return Result;
 }
 void glGetUniformSubroutineuiv(GLenum shadertype, GLint location, GLuint * params) {}
@@ -1772,10 +1772,10 @@ void glLinkProgram(GLuint program) {
     
     glslang_program GlslangProgram = Object->Program.GlslangProgram;
     for(u32 I = 0; I < Object->Program.AttachedShaderCount; ++I) {
-        GlslangProgramAddShader(GlslangProgram, Object->Program.AttachedShaders[I]->Shader.GlslangShader);
+        GlslangProgramAddShader(&GlslangProgram, &Object->Program.AttachedShaders[I]->Shader.GlslangShader);
     }
     
-    if(GlslangProgramLink(GlslangProgram)) {
+    if(GlslangProgramLink(&GlslangProgram)) {
         Object->Program.LinkStatus = GL_FALSE;
         return;
     }
@@ -1787,7 +1787,7 @@ void glLinkProgram(GLuint program) {
         // TODO(blackedout): Error handling
         unsigned char *SpirvBytes = 0;
         u64 SpirvByteCount = 0;
-        GlslangGetSpirv(GlslangProgram, ObjectS->Shader.GlslangShader, &SpirvBytes, &SpirvByteCount);
+        GlslangGetSpirv(&GlslangProgram, &ObjectS->Shader.GlslangShader, &SpirvBytes, &SpirvByteCount);
 
         VkShaderModuleCreateInfo ModuleCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -2017,29 +2017,21 @@ void glShaderSource(GLuint shader, GLsizei count, const GLchar *const* string, c
     if(HandledCheckShaderGet(C, shader, &Object, Name)) {
         return;
     }
+    CheckGL(count < 0, gl_error_SHADER_SOURCE_COUNT_NEGATIVE);
 
-    if(count < 0) {
-        const char *Msg = "glShaderSource: An INVALID_VALUE error is generated if count is negative.";
-        GenerateErrorMsg(C, GL_INVALID_VALUE, GL_DEBUG_SOURCE_APPLICATION, Msg);
-        return;
-    }
-
-    u64 TotalByteCount = 0;
+    u64 TotalSourceLength = 0;
     for(GLsizei I = 0; I < count; ++I) {
-        TotalByteCount += (u64)length[I];
+        TotalSourceLength += (u64)length[I];
     }
 
-    char *Bytes = malloc(TotalByteCount);
-    if(Bytes == 0) {
-        GenerateErrorMsg(C, GL_OUT_OF_MEMORY, GL_DEBUG_SOURCE_API, "glShaderSource");
-        return;
-    }
+    char *Source = calloc(TotalSourceLength + 1, 1);
+    CheckGL(Source == 0, gl_error_OUT_OF_MEMORY);
 
-    Object->Shader.SourceBytes = Bytes;
-    Object->Shader.SourceByteCount = TotalByteCount;
+    Object->Shader.SourceBytes = Source;
+    Object->Shader.SourceByteCount = TotalSourceLength;
     for(GLsizei I = 0; I < count; ++I) {
-        memcpy(Bytes, string[I], length[I]);
-        Bytes += length[I];
+        memcpy(Source, string[I], length[I]);
+        Source += length[I];
     }
 }
 void glShaderStorageBlockBinding(GLuint program, GLuint storageBlockIndex, GLuint storageBlockBinding) {}
