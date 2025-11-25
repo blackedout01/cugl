@@ -58,17 +58,66 @@ struct token {
 struct glsl_type_info {
     const char *Name;
     uint32_t ByteCount;
+    uint32_t ByteAlignment;
 };
 
+// NOTE(blackedout): 16.9.4 - https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#interfaces-resources-layout (2025-11-25)
+#define DOUBLE_ALIGNMENT 8
+#define FLOAT_ALIGNMENT 4
+#define INT_ALIGNMENT 4
+#define UINT_ALIGNMENT 4
+
+// TODO(blackedout): Verify these
 static glsl_type_info GlslTypeInfos[] = {
-    [glsl_type_NONE] = { "", 0 },
-    [glsl_type_VOID] = { "void", 0 },
-    [glsl_type_FLOAT] = { "float", 4 },
-    [glsl_type_VEC2] = { "vec2", 8 },
-    [glsl_type_VEC3] = { "vec3", 12 },
-    [glsl_type_VEC4] = { "vec4", 16 },
+    [glsl_type_NONE] = { "", 0, 0 },
+    [glsl_type_VOID] = { "void", 0, 0 },
+
+    [glsl_type_DOUBLE] = { "double", 8, DOUBLE_ALIGNMENT },
+    [glsl_type_FLOAT] = { "float", 4, FLOAT_ALIGNMENT },
+    [glsl_type_INT] = { "int", 4, INT_ALIGNMENT },
+    [glsl_type_UINT] = { "uint", 4, UINT_ALIGNMENT },
+
+    [glsl_type_DVEC2] = { "dvec2", 16, 2*DOUBLE_ALIGNMENT },
+    [glsl_type_VEC2] = { "vec2", 8, 2*FLOAT_ALIGNMENT },
+    [glsl_type_IVEC2] = { "ivec2", 8, 2*INT_ALIGNMENT },
+    [glsl_type_UVEC2] = { "uvec2", 8, 2*UINT_ALIGNMENT },
+    [glsl_type_DVEC3] = { "dvec3", 24, 4*DOUBLE_ALIGNMENT },
+    [glsl_type_VEC3] = { "vec3", 12, 4*FLOAT_ALIGNMENT },
+    [glsl_type_IVEC3] = { "ivec3", 12, 4*INT_ALIGNMENT },
+    [glsl_type_UVEC3] = { "uvec3", 12, 4*UINT_ALIGNMENT },
+    [glsl_type_DVEC4] = { "dvec4", 32, 4*DOUBLE_ALIGNMENT },
+    [glsl_type_VEC4] = { "vec4", 16, 4*FLOAT_ALIGNMENT },
+    [glsl_type_IVEC4] = { "ivec4", 16, 4*INT_ALIGNMENT },
+    [glsl_type_UVEC4] = { "uvec4", 16, 4*UINT_ALIGNMENT },
+
+    // NOTE(blackedout): NxM - N columns, M rows, stored in column major format
+    // mat2x3 = vec3[2] as far as the alignment is concerned
+    [glsl_type_MAT2] = { "mat2", 2*2*4, 2*FLOAT_ALIGNMENT },
+    [glsl_type_MAT2x2] = { "mat2x2", 2*2*4, 2*FLOAT_ALIGNMENT },
+    [glsl_type_MAT2x3] = { "mat2x3", 2*3*4, 4*FLOAT_ALIGNMENT },
+    [glsl_type_MAT2x4] = { "mat2x4", 2*4*4, 4*FLOAT_ALIGNMENT },
+    [glsl_type_MAT3] = { "mat3", 3*3*4, 4*FLOAT_ALIGNMENT },
+    [glsl_type_MAT3x3] = { "mat3x3", 3*3*4, 4*FLOAT_ALIGNMENT },
+    [glsl_type_MAT3x4] = { "mat3x4", 3*4*4, 4*FLOAT_ALIGNMENT },
+    [glsl_type_MAT4] = { "mat4", 4*4*4, 4*FLOAT_ALIGNMENT },
+    [glsl_type_MAT4x4] = { "mat4x4", 4*4*4, 4*FLOAT_ALIGNMENT },
+
+    [glsl_type_DMAT2] = { "dmat2", 2*2*8, 2*DOUBLE_ALIGNMENT },
+    [glsl_type_DMAT2x2] = { "dmat2x2", 2*2*8, 2*DOUBLE_ALIGNMENT },
+    [glsl_type_DMAT2x3] = { "dmat2x3", 2*3*8, 4*DOUBLE_ALIGNMENT },
+    [glsl_type_DMAT2x4] = { "dmat2x4", 2*4*8, 4*DOUBLE_ALIGNMENT },
+    [glsl_type_DMAT3] = { "dmat3", 3*3*8, 4*DOUBLE_ALIGNMENT },
+    [glsl_type_DMAT3x3] = { "dmat3x3", 3*3*8, 4*DOUBLE_ALIGNMENT },
+    [glsl_type_DMAT3x4] = { "dmat3x4", 3*4*8, 4*DOUBLE_ALIGNMENT },
+    [glsl_type_DMAT4] = { "dmat4", 4*4*8, 4*DOUBLE_ALIGNMENT },
+    [glsl_type_DMAT4x4] = { "dmat4x4", 4*4*8, 4*DOUBLE_ALIGNMENT },
 };
 StaticAssert(ArrayCount(GlslTypeInfos) == glsl_type_COUNT);
+
+#undef UINT_ALIGNMENT
+#undef INT_ALIGNMENT
+#undef FLOAT_ALIGNMENT
+#undef DOUBLE_ALIGNMENT
 
 const char *StorageQualifierStrings[] = {
     [storage_qualifier_NONE] = "",
@@ -264,9 +313,7 @@ static int ParseIntAssignment(const std::vector<token> &Tokens, uint32_t *InOutT
     if(TokenLength >= 64) {
         return 1;
     }
-    for(uint32_t I = 0; I < TokenLength; ++I) {
-        Buf[I] = Tokens[I].Start[I];
-    }
+    memcpy(Buf, Tokens[I].Start, TokenLength);
     *OutInt = strtoull(Buf, 0, 10);
 
     *InOutTokenIndex = I;
@@ -690,6 +737,7 @@ int GlslangProgramLink(glslang_program *Program) {
                 shader_variable DstVar = {
                     .Name = NameIt,
                     .Location = Var.LayoutSet && Var.Layout.LocationSet ? (int)Var.Layout.Location : -1,
+                    .ArrayLength = 1,
                     .StorageQualifier = Var.StorageQualifier,
                     .Type = Var.Type
                 };
@@ -729,10 +777,12 @@ int GlslangProgramLink(glslang_program *Program) {
 
                     if(UniformVariable->Location == -1) {
                         UniformVariable->Location = Var.Location;
+                        UniformVariable->LocationCount = Var.ArrayLength;
                     }
                 } else {
                     uniform_variable NewUniformVariable = {
                         .Location = Var.Location,
+                        .LocationCount = (int)Var.ArrayLength,
                         .Name = Var.Name,
                         .Type = Var.Type,
                     };
@@ -741,15 +791,17 @@ int GlslangProgramLink(glslang_program *Program) {
                     UniformVariable = Uniforms.data() + (Uniforms.size() - 1);
                 }
                 if(UniformVariable->Location != -1) {
-                    UniformLocations.insert(UniformVariable->Location);
-                    // TODO(blackedout): Set all array locations?
+                    for(int K = 0; K < UniformVariable->LocationCount; ++K) {
+                        UniformLocations.insert(UniformVariable->Location + K);
+                    }
                 }
                 
+                UniformVariable->VariableIndicesSet = (shader_flags)(UniformVariable->VariableIndicesSet | (1 << I));
                 UniformVariable->VariableIndices[I] = J;
             }
         }
 
-        // NOTE(blackedout): Set remaining uniform locations
+        // NOTE(blackedout): Set remaining uniform locations, sort by them, then set byte offsets
         int MinLocation = 0;
         for(auto &Uniform : Uniforms) {
             if(Uniform.Location != -1) {
@@ -760,12 +812,26 @@ int GlslangProgramLink(glslang_program *Program) {
                 ++MinLocation;
             }
             Uniform.Location = MinLocation;
-            ++MinLocation;
+            MinLocation += Uniform.LocationCount;
         }
 
         std::sort(Uniforms.begin(), Uniforms.end(), [](const uniform_variable &Lhs, const uniform_variable &Rhs) {
             return Lhs.Location < Rhs.Location;
         });
+
+        uint32_t ByteOffset = 0;
+        uint32_t UniformLocationCount = 0;
+        for(auto &Uniform : Uniforms) {
+            glsl_type_info TypeInfo = GlslTypeInfos[Uniform.Type];
+            if(ByteOffset % TypeInfo.ByteAlignment) {
+                ByteOffset += TypeInfo.ByteAlignment - (ByteOffset % TypeInfo.ByteAlignment);
+            }
+            Uniform.ByteOffset = ByteOffset;
+            ByteOffset += TypeInfo.ByteCount;
+            UniformLocationCount += Uniform.LocationCount;
+        }
+        Program->UniformByteCount = ByteOffset;
+        Program->UniformLocationCount = UniformLocationCount;
 
         const auto GlslangProgram = (glslang::TProgram *)Program->Native;
         Program->Uniforms = (decltype(Program->Uniforms))calloc(Uniforms.size(), sizeof(uniform_variable));

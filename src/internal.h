@@ -220,6 +220,17 @@ typedef struct object {
             GLenum ShouldDelete;
             GLenum LinkStatus;
             glslang_program GlslangProgram;
+            VkDescriptorSetLayout DescriptorSetLayout;
+            VkDescriptorPool DescriptorPool;
+            VkDescriptorSet UniformDescriptorSet;
+            array(u8) UniformBuffer;
+            u32 AlignedUniformByteCount;
+            int LatestUniformsUsed;
+            u32 LatestUsedUniformsIndex;
+            u64 LastUniformCount;
+            VkBuffer VulkanUniformBuffer;
+            VmaAllocation UniformBufferAllocation;
+            VkDeviceMemory UniformMemory;
         } Program;
         struct {
             GLenum Type;
@@ -249,6 +260,7 @@ typedef enum command_type {
     command_DRAW,
     command_BIND_VERTEX_BUFFER,
     command_BIND_PIPELINE,
+    command_BIND_UNIFORMS,
     command_BEGIN_RENDER_PASS,
     command_NEXT_SUBPASS
 } command_type;
@@ -277,6 +289,9 @@ typedef struct command {
         struct {
             GLuint Fbo;
         } BeginRenderPass;
+        struct {
+            u32 Index;
+        } BindUniforms;
         struct {
             u32 SubpassIndex;
         } NextSubpass;
@@ -359,6 +374,10 @@ typedef enum gl_error_type {
     gl_error_SHADER_INVALID,
 
     gl_error_SHADER_SOURCE_COUNT_NEGATIVE,
+
+    gl_error_UNIFORM_COUNT_NEGATIVE,
+    gl_error_UNIFORM_NO_PROGRAM,
+    gl_error_UNIFORM_INVALID_LOCATION,
 
     gl_error_VERTEX_ATTRIB_FORMAT_NONE_BOUND,
     gl_error_VERTEX_ARRAY_ATTRIB_FORMAT_VAO_INVALID,
@@ -501,6 +520,7 @@ typedef struct context {
 
     int IsPipelineSet;
     u32 LastPipelineIndex;
+    u32 LastUniformIndex;
 
     array TmpSubpasses;
 
@@ -551,6 +571,7 @@ void SetVertexInputAttributeEnabled(context *C, object *Object, int IsCurrent, G
 void NoContextGenObjects(GLsizei Count, object_type Type, GLuint *OutHandles, const char *Name);
 void NoContextCreateObjects(GLsizei Count, object_type Type, GLuint *OutHandles, const char *Name);
 GLboolean NoContextIsObjectType(GLuint H, object_type Type, const char *Name);
+void NoContextSetUniformData(GLint Location, const void *Bytes, u32 Num, GLsizei Count, GLenum Type, const char *Name);
 
 void HandledCheckCapSet(context *C, GLenum Cap, int Enabled);
 int VulkanCheck(context *C, VkResult Result, const char *Call);

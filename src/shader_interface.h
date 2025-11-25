@@ -19,10 +19,45 @@ typedef enum storage_qualifier {
 typedef enum glsl_type {
     glsl_type_NONE = 0,
     glsl_type_VOID,
+
+    glsl_type_DOUBLE,
     glsl_type_FLOAT,
+    glsl_type_INT,
+    glsl_type_UINT,
+
+    glsl_type_DVEC2,
     glsl_type_VEC2,
+    glsl_type_IVEC2,
+    glsl_type_UVEC2,
+    glsl_type_DVEC3,
     glsl_type_VEC3,
+    glsl_type_IVEC3,
+    glsl_type_UVEC3,
+    glsl_type_DVEC4,
     glsl_type_VEC4,
+    glsl_type_IVEC4,
+    glsl_type_UVEC4,
+
+    glsl_type_MAT2,
+    glsl_type_MAT2x2,
+    glsl_type_MAT2x3,
+    glsl_type_MAT2x4,
+    glsl_type_MAT3,
+    glsl_type_MAT3x3,
+    glsl_type_MAT3x4,
+    glsl_type_MAT4,
+    glsl_type_MAT4x4,
+
+    glsl_type_DMAT2,
+    glsl_type_DMAT2x2,
+    glsl_type_DMAT2x3,
+    glsl_type_DMAT2x4,
+    glsl_type_DMAT3,
+    glsl_type_DMAT3x3,
+    glsl_type_DMAT3x4,
+    glsl_type_DMAT4,
+    glsl_type_DMAT4x4,
+    
     glsl_type_COUNT
 } glsl_type;
 
@@ -35,6 +70,15 @@ typedef enum shader_type {
     shader_TESSELATION_EVALUATE,
     shader_COUNT,
 } shader_type;
+
+typedef enum shader_flags {
+    shader_flag_VERTEX = 1 << shader_VERTEX,
+    shader_flag_FRAGMENT = 1 << shader_FRAGMENT,
+    shader_flag_COMPUTE = 1 << shader_COMPUTE,
+    shader_flag_GEOMETRY = 1 << shader_GEOMETRY,
+    shader_flag_TESSELATION_CONTROL = 1 << shader_TESSELATION_CONTROL,
+    shader_flag_TESSELATION_EVALUATE = 1 << shader_TESSELATION_EVALUATE,
+} shader_flags;
 
 typedef enum glslang_error_type {
     glslang_error_NONE = 0,
@@ -55,9 +99,11 @@ typedef struct shader_variable {
 
 typedef struct uniform_variable {
     int Location;
+    int LocationCount;
     const char *Name;
     glsl_type Type;
-    // TODO(blackedout): These need set flags
+    uint32_t ByteOffset;
+    shader_flags VariableIndicesSet;
     uint32_t VariableIndices[shader_COUNT];
 } uniform_variable;
 
@@ -77,6 +123,8 @@ typedef struct glslang_program {
     glslang_shader *AttachedShaders[shader_COUNT];
     uniform_variable *Uniforms;
     uint32_t UniformCount;
+    uint32_t UniformByteCount;
+    uint32_t UniformLocationCount;
 } glslang_program;
 
 int GlslangShaderCreateAndParse(shader_type Type, const char *Source, uint64_t SourceLength, glslang_shader *OutShader);

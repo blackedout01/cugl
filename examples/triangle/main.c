@@ -18,7 +18,7 @@ const char SourceV[] =
 
 "layout(location = 0) out vec3 fragColor;\n"
 
-"LOC(0) UNI vec2 offset;\n"
+"LOC(1) UNI vec2 offset;\n"
 "UNI float zpos;\n"
 
 "void main() {\n"
@@ -166,12 +166,29 @@ int main() {
     glUseProgram(Program);
     glBindVertexArray(Vao);
 
+    float Position = 0.0f;
+    float Velocity = 0.5f;
+
+    double T0 = glfwGetTime();
+    float DeltaTime = 0.0f;
     while(glfwWindowShouldClose(Window) == 0) {
         glfwPollEvents();
         glClear(GL_COLOR_BUFFER_BIT);
         
+        Position += Velocity*DeltaTime;
+        if(Position < -0.5f || 0.5f < Position) {
+            Velocity *= -1.0f;
+        }
+
+        glUniform2f(1, Position, 0.0f);
         glDrawArrays(GL_TRIANGLES, 0, 3);
+        glUniform2f(1, 0.0f, Position);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
         cuglSwapBuffers();
+        double T = glfwGetTime();
+        DeltaTime = (float)(T - T0);
+        T0 = T;
     }
 
 label_Exit:

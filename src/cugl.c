@@ -1,5 +1,6 @@
 #include "cugl/cugl.h"
 #include "internal.h"
+#include "shader_interface.h"
 #include "vulkan/vulkan_core.h"
 
 #include <stdio.h>
@@ -36,6 +37,15 @@ void cuglSwapBuffers(void) {
             pipeline_state_header *Header = GetPipelineState(C, Command->BindPipeline.PipelineIndex, pipeline_state_HEADER);
             Header->LastBoundSwapCounter = C->SwapCounter;
             vkCmdBindPipeline(GraphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Header->Pipeline);
+        } break;
+        case command_BIND_UNIFORMS: {
+            pipeline_state_header *Header = GetPipelineState(C, PipelineIndex, pipeline_state_HEADER);
+            pipeline_state_program *State = GetPipelineState(C, PipelineIndex, pipeline_state_PROGRAM);
+            object *ObjectP = 0;
+            Assert(0 == CheckObjectTypeGet(C, State->Program, object_PROGRAM, &ObjectP));
+
+            uint32_t Offset = ObjectP->Program.AlignedUniformByteCount*Command->BindUniforms.Index;
+            vkCmdBindDescriptorSets(GraphicsCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, Header->Layout, 0, 1, &ObjectP->Program.UniformDescriptorSet, 1, &Offset);
         } break;
         case command_CLEAR: {
             if(Fbo == 0) {
@@ -193,6 +203,18 @@ void cuglSwapBuffers(void) {
 
     VulkanCheckReturn(vkResetCommandBuffer(C->CommandBuffers[command_buffer_GRAPHICS], 0));
 
+    for(u32 I = 1; I < C->Objects.Capacity; ++I) {
+        object *Object = 0;
+        if(0 == CheckObjectTypeGet(C, I, object_PROGRAM, &Object)) {
+            u8 *LastUniformData = ArrayData(u8, Object->Program.UniformBuffer) + (Object->Program.UniformBuffer.Count - 1)*Object->Program.AlignedUniformByteCount;
+            memcpy(Object->Program.UniformBuffer.Data, LastUniformData, Object->Program.AlignedUniformByteCount);
+            Object->Program.UniformBuffer.Count = 1;
+            Object->Program.LatestUsedUniformsIndex = 0;
+            Object->Program.LatestUniformsUsed = 0;
+        }
+    }
+
+    // NOTE(blackedout): Erase pipeline states whose lifetime exceeds the maximum
     u32 DeleteCount = 0;
     for(u32 I = 1; I < C->PipelineStates.Count; ++I) {
         pipeline_state_header *Header = GetPipelineState(C, I, pipeline_state_HEADER);
@@ -1770,12 +1792,12 @@ void glLinkProgram(GLuint program) {
         return;
     }
     
-    glslang_program GlslangProgram = Object->Program.GlslangProgram;
+    glslang_program *GlslangProgram = &Object->Program.GlslangProgram;
     for(u32 I = 0; I < Object->Program.AttachedShaderCount; ++I) {
-        GlslangProgramAddShader(&GlslangProgram, &Object->Program.AttachedShaders[I]->Shader.GlslangShader);
+        GlslangProgramAddShader(GlslangProgram, &Object->Program.AttachedShaders[I]->Shader.GlslangShader);
     }
     
-    if(GlslangProgramLink(&GlslangProgram)) {
+    if(GlslangProgramLink(GlslangProgram)) {
         Object->Program.LinkStatus = GL_FALSE;
         return;
     }
@@ -1787,7 +1809,7 @@ void glLinkProgram(GLuint program) {
         // TODO(blackedout): Error handling
         unsigned char *SpirvBytes = 0;
         u64 SpirvByteCount = 0;
-        GlslangGetSpirv(&GlslangProgram, &ObjectS->Shader.GlslangShader, &SpirvBytes, &SpirvByteCount);
+        GlslangGetSpirv(GlslangProgram, &ObjectS->Shader.GlslangShader, &SpirvBytes, &SpirvByteCount);
 
         VkShaderModuleCreateInfo ModuleCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1802,6 +1824,58 @@ void glLinkProgram(GLuint program) {
         // TODO(blackedout): Fix leak
         free(SpirvBytes);
     }
+
+    VkDescriptorSetLayoutBinding LayoutBindings[] = {
+        {
+            .binding = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+            .descriptorCount = 1,
+            .stageFlags = VK_SHADER_STAGE_ALL_GRAPHICS,
+            .pImmutableSamplers = 0,
+        }
+    };
+
+    VkDescriptorSetLayoutCreateInfo SetLayoutCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .pNext = 0,
+        .flags = 0,
+        .bindingCount = ArrayCount(LayoutBindings),
+        .pBindings = LayoutBindings,
+    };
+
+    VulkanCheckReturn(vkCreateDescriptorSetLayout(C->Device, &SetLayoutCreateInfo, 0, &Object->Program.DescriptorSetLayout));
+
+    VkDescriptorPoolSize DescriptorPoolSizes[] = {
+        {
+            .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+            .descriptorCount = 1,
+        }
+    };
+    VkDescriptorPoolCreateInfo DescriptorPoolCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .pNext = 0,
+        .flags = 0,
+        .maxSets = 1,
+        .poolSizeCount = ArrayCount(DescriptorPoolSizes),
+        .pPoolSizes = DescriptorPoolSizes,
+    };
+    VulkanCheckReturn(vkCreateDescriptorPool(C->Device, &DescriptorPoolCreateInfo, 0, &Object->Program.DescriptorPool));
+
+    VkDescriptorSetAllocateInfo DescriptorSetAllocateInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .pNext = 0,
+        .descriptorPool = Object->Program.DescriptorPool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &Object->Program.DescriptorSetLayout,
+    };
+
+    VulkanCheckReturn(vkAllocateDescriptorSets(C->Device, &DescriptorSetAllocateInfo, &Object->Program.UniformDescriptorSet));
+    u64 MinAlignment = C->DeviceInfo.Properties.limits.minUniformBufferOffsetAlignment;
+    Object->Program.AlignedUniformByteCount = MinAlignment*((GlslangProgram->UniformByteCount + MinAlignment - 1)/MinAlignment);
+    CheckGL(ArrayRequireRoom(&Object->Program.UniformBuffer, 1, Object->Program.AlignedUniformByteCount, 1), gl_error_OUT_OF_MEMORY);
+    Object->Program.UniformBuffer.Count = 1;
+    memset(Object->Program.UniformBuffer.Data, 0, Object->Program.AlignedUniformByteCount);
+    printf("raw %u, aligned %u, %f wasted\n", Object->Program.GlslangProgram.UniformByteCount, Object->Program.AlignedUniformByteCount, 1 - (Object->Program.GlslangProgram.UniformByteCount/(double)Object->Program.AlignedUniformByteCount));
 }
 void glLogicOp(GLenum opcode) {}
 void * glMapBuffer(GLenum target, GLenum access) {return 0;}
@@ -2137,38 +2211,114 @@ void glTextureView(GLuint texture, GLenum target, GLuint origtexture, GLenum int
 void glTransformFeedbackBufferBase(GLuint xfb, GLuint index, GLuint buffer) {}
 void glTransformFeedbackBufferRange(GLuint xfb, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size) {}
 void glTransformFeedbackVaryings(GLuint program, GLsizei count, const GLchar *const* varyings, GLenum bufferMode) {}
-void glUniform1d(GLint location, GLdouble x) {}
-void glUniform1dv(GLint location, GLsizei count, const GLdouble * value) {}
-void glUniform1f(GLint location, GLfloat v0) {}
-void glUniform1fv(GLint location, GLsizei count, const GLfloat * value) {}
-void glUniform1i(GLint location, GLint v0) {}
-void glUniform1iv(GLint location, GLsizei count, const GLint * value) {}
-void glUniform1ui(GLint location, GLuint v0) {}
-void glUniform1uiv(GLint location, GLsizei count, const GLuint * value) {}
-void glUniform2d(GLint location, GLdouble x, GLdouble y) {}
-void glUniform2dv(GLint location, GLsizei count, const GLdouble * value) {}
-void glUniform2f(GLint location, GLfloat v0, GLfloat v1) {}
-void glUniform2fv(GLint location, GLsizei count, const GLfloat * value) {}
-void glUniform2i(GLint location, GLint v0, GLint v1) {}
-void glUniform2iv(GLint location, GLsizei count, const GLint * value) {}
-void glUniform2ui(GLint location, GLuint v0, GLuint v1) {}
-void glUniform2uiv(GLint location, GLsizei count, const GLuint * value) {}
-void glUniform3d(GLint location, GLdouble x, GLdouble y, GLdouble z) {}
-void glUniform3dv(GLint location, GLsizei count, const GLdouble * value) {}
-void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2) {}
-void glUniform3fv(GLint location, GLsizei count, const GLfloat * value) {}
-void glUniform3i(GLint location, GLint v0, GLint v1, GLint v2) {}
-void glUniform3iv(GLint location, GLsizei count, const GLint * value) {}
-void glUniform3ui(GLint location, GLuint v0, GLuint v1, GLuint v2) {}
-void glUniform3uiv(GLint location, GLsizei count, const GLuint * value) {}
-void glUniform4d(GLint location, GLdouble x, GLdouble y, GLdouble z, GLdouble w) {}
-void glUniform4dv(GLint location, GLsizei count, const GLdouble * value) {}
-void glUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3) {}
-void glUniform4fv(GLint location, GLsizei count, const GLfloat * value) {}
-void glUniform4i(GLint location, GLint v0, GLint v1, GLint v2, GLint v3) {}
-void glUniform4iv(GLint location, GLsizei count, const GLint * value) {}
-void glUniform4ui(GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3) {}
-void glUniform4uiv(GLint location, GLsizei count, const GLuint * value) {}
+void glUniform1d(GLint location, GLdouble x) {
+    NoContextSetUniformData(location, &x, 1, 1, GL_DOUBLE, __func__);
+}
+void glUniform1dv(GLint location, GLsizei count, const GLdouble * value) {
+    NoContextSetUniformData(location, value, 1, count, GL_DOUBLE, __func__);
+}
+void glUniform1f(GLint location, GLfloat v0) {
+    NoContextSetUniformData(location, &v0, 1, 1, GL_FLOAT, __func__);
+}
+void glUniform1fv(GLint location, GLsizei count, const GLfloat * value) {
+    NoContextSetUniformData(location, value, 1, count, GL_FLOAT, __func__);
+}
+void glUniform1i(GLint location, GLint v0) {
+    NoContextSetUniformData(location, &v0, 1, 1, GL_INT, __func__);
+}
+void glUniform1iv(GLint location, GLsizei count, const GLint * value) {
+    NoContextSetUniformData(location, value, 1, count, GL_INT, __func__);
+}
+void glUniform1ui(GLint location, GLuint v0) {
+    NoContextSetUniformData(location, &v0, 1, 1, GL_UNSIGNED_INT, __func__);
+}
+void glUniform1uiv(GLint location, GLsizei count, const GLuint * value) {
+    NoContextSetUniformData(location, value, 1, count, GL_UNSIGNED_INT, __func__);
+}
+void glUniform2d(GLint location, GLdouble x, GLdouble y) {
+    GLdouble v[] = { x, y };
+    NoContextSetUniformData(location, v, 2, 1, GL_DOUBLE, __func__);
+}
+void glUniform2dv(GLint location, GLsizei count, const GLdouble * value) {
+    NoContextSetUniformData(location, value, 2, count, GL_DOUBLE, __func__);
+}
+void glUniform2f(GLint location, GLfloat v0, GLfloat v1) {
+    GLfloat v[] = { v0, v1 };
+    NoContextSetUniformData(location, v, 2, 1, GL_FLOAT, __func__);
+}
+void glUniform2fv(GLint location, GLsizei count, const GLfloat * value) {
+    NoContextSetUniformData(location, value, 2, count, GL_FLOAT, __func__);
+}
+void glUniform2i(GLint location, GLint v0, GLint v1) {
+    GLint v[] = { v0, v1 };
+    NoContextSetUniformData(location, v, 2, 1, GL_INT, __func__);
+}
+void glUniform2iv(GLint location, GLsizei count, const GLint * value) {
+    NoContextSetUniformData(location, value, 2, count, GL_INT, __func__);
+}
+void glUniform2ui(GLint location, GLuint v0, GLuint v1) {
+    GLuint v[] = { v0, v1 };
+    NoContextSetUniformData(location, v, 2, 1, GL_UNSIGNED_INT, __func__);
+}
+void glUniform2uiv(GLint location, GLsizei count, const GLuint * value) {
+    NoContextSetUniformData(location, value, 2, count, GL_UNSIGNED_INT, __func__);
+}
+void glUniform3d(GLint location, GLdouble x, GLdouble y, GLdouble z) {
+    GLdouble v[] = { x, y, z };
+    NoContextSetUniformData(location, v, 3, 1, GL_DOUBLE, __func__);
+}
+void glUniform3dv(GLint location, GLsizei count, const GLdouble * value) {
+    NoContextSetUniformData(location, value, 3, count, GL_DOUBLE, __func__);
+}
+void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2) {
+    GLfloat v[] = { v0, v1, v2 };
+    NoContextSetUniformData(location, v, 3, 1, GL_FLOAT, __func__);
+}
+void glUniform3fv(GLint location, GLsizei count, const GLfloat * value) {
+    NoContextSetUniformData(location, value, 3, count, GL_FLOAT, __func__);
+}
+void glUniform3i(GLint location, GLint v0, GLint v1, GLint v2) {
+    GLint v[] = { v0, v1, v2 };
+    NoContextSetUniformData(location, v, 3, 1, GL_INT, __func__);
+}
+void glUniform3iv(GLint location, GLsizei count, const GLint * value) {
+    NoContextSetUniformData(location, value, 3, count, GL_INT, __func__);
+}
+void glUniform3ui(GLint location, GLuint v0, GLuint v1, GLuint v2) {
+    GLuint v[] = { v0, v1, v2 };
+    NoContextSetUniformData(location, v, 3, 1, GL_UNSIGNED_INT, __func__);
+}
+void glUniform3uiv(GLint location, GLsizei count, const GLuint * value) {
+    NoContextSetUniformData(location, value, 3, count, GL_UNSIGNED_INT, __func__);
+}
+void glUniform4d(GLint location, GLdouble x, GLdouble y, GLdouble z, GLdouble w) {
+    GLdouble v[] = { x, y, z, w };
+    NoContextSetUniformData(location, v, 4, 1, GL_DOUBLE, __func__);
+}
+void glUniform4dv(GLint location, GLsizei count, const GLdouble * value) {
+    NoContextSetUniformData(location, value, 4, count, GL_DOUBLE, __func__);
+}
+void glUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3) {
+    GLfloat v[] = { v0, v1, v2, v3 };
+    NoContextSetUniformData(location, v, 4, 1, GL_FLOAT, __func__);
+}
+void glUniform4fv(GLint location, GLsizei count, const GLfloat * value) {
+    NoContextSetUniformData(location, value, 4, count, GL_FLOAT, __func__);
+}
+void glUniform4i(GLint location, GLint v0, GLint v1, GLint v2, GLint v3) {
+    GLint v[] = { v0, v1, v2, v3 };
+    NoContextSetUniformData(location, v, 4, 1, GL_INT, __func__);
+}
+void glUniform4iv(GLint location, GLsizei count, const GLint * value) {
+    NoContextSetUniformData(location, value, 4, count, GL_INT, __func__);
+}
+void glUniform4ui(GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3) {
+    GLuint v[] = { v0, v1, v2, v3 };
+    NoContextSetUniformData(location, v, 4, 1, GL_UNSIGNED_INT, __func__);
+}
+void glUniform4uiv(GLint location, GLsizei count, const GLuint * value) {
+    NoContextSetUniformData(location, value, 4, count, GL_UNSIGNED_INT, __func__);
+}
 void glUniformBlockBinding(GLuint program, GLuint uniformBlockIndex, GLuint uniformBlockBinding) {}
 void glUniformMatrix2dv(GLint location, GLsizei count, GLboolean transpose, const GLdouble * value) {}
 void glUniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat * value) {}
@@ -2205,6 +2355,7 @@ void glUseProgram(GLuint program) {
     if(C->ActiveProgram != program) {
         pipeline_state_program *State = GetCurrentPipelineState(C, pipeline_state_PROGRAM);
         State->Program = program;
+        C->ActiveProgram = program;
     }
 }
 void glUseProgramStages(GLuint pipeline, GLbitfield stages, GLuint program) {}
