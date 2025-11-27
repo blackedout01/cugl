@@ -91,6 +91,7 @@ typedef enum glslang_error_type {
 
 typedef struct shader_variable {
     const char *Name;
+    uint32_t ArrayIndexCount;
     uint32_t ArrayLength;
     int Location;
     storage_qualifier StorageQualifier;
@@ -135,8 +136,8 @@ int GlslangProgramCreate(glslang_program *OutProgram);
 int GlslangProgramAddShader(glslang_program *Program, glslang_shader *Shader);
 int GlslangProgramLink(glslang_program *Program);
 int GlslangProgramGetLog(glslang_program *Program, uint64_t *OutLength, const char **OutString);
-int GlslangProgramGetLocation(glslang_program *Program, const char *Name, int *OutLocation);
 void GlslangProgramDelete(glslang_program *Program);
+int ProgramGetUniformLocation(glslang_program *Program, const char *Name, int *OutLocation);
 int GlslangGetSpirv(glslang_program *Program, glslang_shader *Shader, unsigned char **OutBytes, uint64_t *OutByteCount);
 
 #ifdef __cplusplus

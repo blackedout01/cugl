@@ -16,6 +16,7 @@
 #include <map>
 
 #define TrueOrReturn1(X) if((X) == 0) return 1
+#define ZeroOrReturn1(X) if(X) return 1
 
 static int GlslangLanguageToType(EShLanguage Language, shader_type *OutType) {
     switch(Language) {
@@ -43,14 +44,26 @@ static int GlslangLanguageToType(EShLanguage Language, shader_type *OutType) {
 
 enum token_type {
     token_NAME,
+    token_NUMBER,
     token_SINGLE,
     token_PREPROCESSOR,
     token_CHAR,
     token_STRING,
 };
 
+enum token_flags {
+    token_flag_NONE = 0,
+    token_flag_NUMBER_DECIMAL = 0x01,
+    token_flag_NUMBER_HEX = 0x02,
+    token_flag_NUMBER_OCT = 0x04,
+    token_flag_NUMBER_BINARY = 0x8,
+    token_flag_NUMBER_DOUBLE = 0x10,
+    token_flag_NUMBER_UNSIGNED = 0x20
+};
+
 struct token {
     token_type Type;
+    token_flags Flags;
     const uint8_t *Start;
     const uint8_t *End;
 };
@@ -139,6 +152,7 @@ struct variable_layout {
 struct variable {
     int LayoutSet;
     variable_layout Layout;
+    std::vector<uint32_t> ArrayLengths;
     storage_qualifier StorageQualifier;
     glsl_type Type;
     uint32_t NameTokenIndex;
@@ -154,6 +168,8 @@ struct parsed_shader {
     uint32_t UniformCount;
     std::vector<variable> GlobalVariables;
 };
+
+// MARK: Lex functions
 
 static void SeekSpaceEnd(uint8_t **InOutIt, uint8_t *End) {
     uint8_t *It = *InOutIt;
@@ -174,6 +190,8 @@ static void SeekNameEnd(uint8_t **InOutIt, uint8_t *End) {
     *InOutIt = It;
 }
 
+// NOTE(blackedout): Apparently the preprocessor removes comments so these are not needed (they are also untested)
+#if 0
 static void SeekLineEnd(uint8_t **InOutIt, uint8_t *End) {
     uint8_t *It = *InOutIt;
     while(It < End && *(It++) != '\n');
@@ -198,6 +216,7 @@ static void SeekCommentEnd(uint8_t **InOutIt, uint8_t *End) {
     }
     *InOutIt = It;
 }
+#endif
 
 static void SeekNonEscapedCharEnd(uint8_t **InOutIt, uint8_t *End, char C) {
     uint8_t *It = *InOutIt;
@@ -218,6 +237,63 @@ static void SeekNonEscapedCharEnd(uint8_t **InOutIt, uint8_t *End, char C) {
     *InOutIt = It;
 }
 
+static void SeekNumberEnd(uint8_t **InOutIt, uint8_t *End, token_flags *OutFlags) {
+    uint8_t *It = *InOutIt;
+    u32 Flags = 0;
+    if(It < End && *It == '0') {
+        ++It;
+        if(It < End) {
+            if(*It == 'x') {
+                Flags |= token_flag_NUMBER_HEX;
+            } else if(*It == 'b') {
+                Flags |= token_flag_NUMBER_BINARY;
+            }
+            ++It;
+        }
+        if(Flags == 0) {
+            Flags |= token_flag_NUMBER_OCT;
+        }
+    }
+    while(It < End && isdigit(*It)) {
+        ++It;
+    }
+    if(It < End && *It == '.') {
+        ++It;
+        Flags |= token_flag_NUMBER_DECIMAL;
+        while(It < End && isdigit(*It)) {
+            ++It;
+        }
+    }
+    if(It < End && (*It == 'e' || *It == 'E')) {
+        ++It;
+        Flags |= token_flag_NUMBER_DECIMAL;
+        if(It < End && (*It == '+' || *It == '-')) {
+            ++It;
+        }
+        while(It < End && isdigit(*It)) {
+            ++It;
+        }
+    }
+    if(It < End) {
+        if(*It == 'l' || *It == 'L') {
+            ++It;
+            if(It < End && (*It == 'f' || *It == 'F')) {
+                ++It;
+                Flags |= token_flag_NUMBER_DOUBLE;
+            }
+        } else if(*It == 'f' || *It == 'F') {
+            ++It;
+            // NOTE(blackedout): Float is the default
+        } else if(*It == 'u' || *It == 'U') {
+            ++It;
+            Flags |= token_flag_NUMBER_UNSIGNED;
+        }
+    }
+
+    *OutFlags = static_cast<token_flags>(Flags);
+    *InOutIt = It;
+}
+
 static void LexProgram(const char *Bytes, uint64_t ByteCount, std::vector<token> &OutTokens) {
     auto &Tokens = OutTokens;
     Tokens.clear();
@@ -226,42 +302,50 @@ static void LexProgram(const char *Bytes, uint64_t ByteCount, std::vector<token>
     uint8_t *ItEnd = (uint8_t *)Bytes + ByteCount;
     while(It < ItEnd) {
         uint8_t *TokenStart = It;
+        token_flags Flags = token_flag_NONE;
 
         switch(*It) {
         case '#': {
             ++It;
             SeekNameEnd(&It, ItEnd);
-            Tokens.push_back(token {token_PREPROCESSOR, TokenStart, It});
+            Tokens.push_back(token {token_PREPROCESSOR, Flags, TokenStart, It});
         } break;
         case '\'': {
             ++It;
             SeekNonEscapedCharEnd(&It, ItEnd, '\'');
-            Tokens.push_back(token {token_CHAR, TokenStart + 1, It});
+            Tokens.push_back(token {token_CHAR, Flags, TokenStart + 1, It});
         } break;
         case '"': {
             ++It;
             SeekNonEscapedCharEnd(&It, ItEnd, '"');
-            Tokens.push_back(token {token_STRING, TokenStart + 1, It});
+            Tokens.push_back(token {token_STRING, Flags, TokenStart + 1, It});
         } break;
         case '!': case '$': case '%': case '&': case '(': case ')': case '*': case '+':
-        case ',': case '-': case '.': case '/': case ':': case ';': case '<': case '=':
-        case '>': case '?': case '@': case '[': case '\\': case ']': case '^': case '`':
-        case '{': case '|': case '}': case '~': {
-            Tokens.push_back(token {token_SINGLE, TokenStart, ++It});
+        case ',': case '-': case '/': case ':': case ';': case '<': case '=': case '>':
+        case '?': case '@': case '[': case '\\': case ']': case '^': case '`': case '{':
+        case '|': case '}': case '~': {
+            Tokens.push_back(token {token_SINGLE, Flags, TokenStart, ++It});
         } break;
         case ' ': case '\t': case '\n': case '\v': case '\f': case '\r': {
             ++It;
             SeekSpaceEnd(&It, ItEnd);
+        } break;
+        case '0': case '1': case '2': case '3': case '4': case '5': case '6': case '7':
+        case '8': case '9': case '.': {
+            ++It;
+            SeekNumberEnd(&It, ItEnd, &Flags);
+            token_type Type = (It - TokenStart == 1 && TokenStart[0] == '.') ? token_SINGLE : token_NUMBER;
+            Tokens.push_back(token {Type, Flags, TokenStart, It});
         } break;
         case 0:
             ++It;
             // TODO(blackedout): What to do here??
             break;
         default:
-        if(isalnum(*It) || *It == '_') {
+        if(isalpha(*It) || *It == '_') {
             ++It;
             SeekNameEnd(&It, ItEnd);
-            Tokens.push_back(token {token_NAME, TokenStart, It});
+            Tokens.push_back(token {token_NAME, Flags, TokenStart, It});
         } else {
             Assert(0);
         } break;
@@ -298,23 +382,48 @@ static int TokenEqualsGlslType(const token &Token, uint32_t *OutIndex) {
     return TokenEqualsAny(Token, GlslTypeInfos, glsl_type_COUNT, 1, offsetof(glsl_type_info, Name), sizeof(glsl_type_info), OutIndex);
 }
 
-static int ParseIntAssignment(const std::vector<token> &Tokens, uint32_t *InOutTokenIndex, uint32_t *OutInt) {
-    uint32_t I = *InOutTokenIndex;
+// MARK: Parse functions
+// NOTE(blackedout): These return 1 if the format doesn't match. The token index remains untouched.
+// On success, 0 is returned and the token index is advanced to after the thing that has been parsed.
 
-    if((I < Tokens.size() && Tokens[I].Start[0] == '=') == 0) {
-        return 1;
+static int ParseInt(const std::vector<token> &Tokens, uint32_t *InOutTokenIndex, uint64_t *OutInt, int *OutIsNegative) {
+    uint32_t I = *InOutTokenIndex;
+    
+    int NegativeSignCount = 0;
+    while(1) {
+        TrueOrReturn1(I < Tokens.size());
+        if(Tokens[I].Type == token_NUMBER) {
+            break;
+        }
+        TrueOrReturn1(Tokens[I].Type == token_SINGLE);
+        if(Tokens[I].Start[0] == '-') {
+            ++NegativeSignCount;
+        } else {
+            TrueOrReturn1(Tokens[I].Start[0] == '+');
+        }
+        ++I;
     }
-    ++I;
-    if((I < Tokens.size()) == 0) {
-        return 1;
-    }
+
     char Buf[64] = {};
     uint32_t TokenLength = Tokens[I].End - Tokens[I].Start;
-    if(TokenLength >= 64) {
-        return 1;
+    if(TokenLength < ArrayCount(Buf)) {
+        memcpy(Buf, Tokens[I].Start, TokenLength);
+
+        int Base = 10;
+        if(Tokens[I].Flags & token_flag_NUMBER_OCT) {
+            Base = 8;
+        } else if(Tokens[I].Flags & token_flag_NUMBER_HEX) {
+            Base = 16;
+        } else if(Tokens[I].Flags & token_flag_NUMBER_BINARY) {
+            Base = 2;
+        }
+        *OutInt = strtoull(Buf, 0, Base);
+        *OutIsNegative = NegativeSignCount & 1;
+    } else {
+        *OutInt = 0;
+        *OutIsNegative = 0;
     }
-    memcpy(Buf, Tokens[I].Start, TokenLength);
-    *OutInt = strtoull(Buf, 0, 10);
+    ++I;
 
     *InOutTokenIndex = I;
     return 0;
@@ -324,9 +433,9 @@ static int ParseLayout(const std::vector<token> &Tokens, uint32_t *InOutTokenInd
     variable_layout &Layout = OutLayout;
     uint32_t I = *InOutTokenIndex;
 
-    if((I < Tokens.size() && Tokens[I].Start[0] == '(') == 0) {
-        return 1;
-    }
+    uint64_t Num = 0;
+    int IsNegative = 0;
+    TrueOrReturn1(I < Tokens.size() && Tokens[I].Start[0] == '(');
     ++I;
     while(I < Tokens.size()) {
         if(Tokens[I].Type == token_SINGLE) {
@@ -340,17 +449,18 @@ static int ParseLayout(const std::vector<token> &Tokens, uint32_t *InOutTokenInd
         } else if(Tokens[I].Type == token_NAME) {
             if(TokenEquals(Tokens[I], "location")) {
                 ++I;
-                if(ParseIntAssignment(Tokens, &I, &Layout.Location)) {
-                    return 1;
-                }
+                TrueOrReturn1(I < Tokens.size() && Tokens[I].Start[0] == '=');
                 ++I;
+                ZeroOrReturn1(ParseInt(Tokens, &I, &Num, &IsNegative));
+                // TOOD(blackedout): Check overflow, for binding too
+                Layout.Location = Num;
                 Layout.LocationSet = 1;
             } else if(TokenEquals(Tokens[I], "binding")) {
                 ++I;
-                if(ParseIntAssignment(Tokens, &I, &Layout.Binding)) {
-                    return 1;
-                }
+                TrueOrReturn1(I < Tokens.size() && Tokens[I].Start[0] == '=');
                 ++I;
+                ZeroOrReturn1(ParseInt(Tokens, &I, &Num, &IsNegative));
+                Layout.Binding = Num;
                 Layout.BindingSet = 1;
             } else {
                 // NOTE(blackedout): Unknown layout specifier
@@ -364,8 +474,44 @@ static int ParseLayout(const std::vector<token> &Tokens, uint32_t *InOutTokenInd
     return 0;
 }
 
+static int ParseArrayIndex(const std::vector<token> &Tokens, uint32_t *InOutTokenIndex, int32_t *OutIndex, int *OutIsEmpty) {
+    uint32_t I = *InOutTokenIndex;
+
+    TrueOrReturn1(I < Tokens.size() && Tokens[I].Start[0] == '[');
+    ++I;
+
+    int IsEmpty = 0;
+    uint64_t Index = 0;
+    int IsNegative = 0;
+    if(ParseInt(Tokens, &I, &Index, &IsNegative)) {
+        IsEmpty = 1;
+    }
+    TrueOrReturn1(I < Tokens.size() && Tokens[I].Start[0] == ']');
+    ++I;
+
+    // TODO(blackedout): Check overflow
+    *OutIndex = (IsNegative ? -1 : 1)*static_cast<int32_t>(Index);
+    *OutIsEmpty = IsEmpty;
+    *InOutTokenIndex = I;
+    return 0;
+}
+
+static void ParseSkipArrayIndices(const std::vector<token> &Tokens, uint32_t *InOutTokenIndex, uint32_t *OutIndexCount) {
+    uint32_t I = *InOutTokenIndex;
+
+    uint32_t IndexCount = 0;
+    while(I < Tokens.size() && Tokens[I].Start[0] == '[') {
+        ++IndexCount;
+        ++I;
+        while(I < Tokens.size() && Tokens[I++].Start[0] != ']');
+    }
+
+    *OutIndexCount = IndexCount;
+    *InOutTokenIndex = I;
+}
+
 static int ParseVariable(const std::vector<token> &Tokens, uint32_t *InOutTokenIndex, variable &OutVar) {
-    variable &Var = OutVar;
+    variable Var = {};
 
     uint32_t I = *InOutTokenIndex;
     uint32_t StartI = I;
@@ -374,9 +520,7 @@ static int ParseVariable(const std::vector<token> &Tokens, uint32_t *InOutTokenI
     Var.LayoutSet = 0;
     if(TokenEquals(Tokens[I], "layout")) {
         ++I;
-        if(ParseLayout(Tokens, &I, Var.Layout)) {
-            return 1;
-        }
+        ZeroOrReturn1(ParseLayout(Tokens, &I, Var.Layout));
         Var.LayoutSet = 1;
         TrueOrReturn1(I < Tokens.size());
     }
@@ -399,17 +543,68 @@ static int ParseVariable(const std::vector<token> &Tokens, uint32_t *InOutTokenI
         //Assert(0);
         return 1;
     }
+
+    uint32_t TypeArrayIndexCount = 0;
+    uint32_t TypeArrayTokenIndex = I;
+    ParseSkipArrayIndices(Tokens, &I, &TypeArrayIndexCount);
     
     TrueOrReturn1(Tokens[I].Type == token_NAME); 
     Var.NameTokenIndex = I;
     ++I;
-    TrueOrReturn1(I < Tokens.size());
+
+    uint32_t NameArrayIndexCount = 0;
+    uint32_t NameArrayTokenIndex = I;
+    ParseSkipArrayIndices(Tokens, &I, &NameArrayIndexCount);
+
+    // NOTE(blackedout): vec2[A][B] v[C][D] = (((vec2 x B) x A) x D) x C
+    // Parse type part and insert reversed, then parse name part and insert reversed
+    Var.ArrayLengths.resize(TypeArrayIndexCount + NameArrayIndexCount);
+    uint32_t TotalElementCount = 1;
+    uint32_t TmpTokenIndex = TypeArrayTokenIndex;
+    int IsArrayIndexEmpty = 0;
+    for(uint32_t J = 0; J < TypeArrayIndexCount; ++J) {
+        int32_t ArrayIndexLength = 0;
+        ZeroOrReturn1(ParseArrayIndex(Tokens, &TmpTokenIndex, &ArrayIndexLength, &IsArrayIndexEmpty));
+        TrueOrReturn1(ArrayIndexLength >= 0);
+        if(IsArrayIndexEmpty) {
+            ArrayIndexLength = 1;
+        }
+
+        Var.ArrayLengths[TypeArrayIndexCount - 1 - J] = ArrayIndexLength;
+        TotalElementCount *= ArrayIndexLength;
+    }
+    TmpTokenIndex = NameArrayTokenIndex;
+    for(uint32_t J = 0; J < NameArrayIndexCount; ++J) {
+        int32_t ArrayIndexLength = 0;
+        
+        ZeroOrReturn1(ParseArrayIndex(Tokens, &TmpTokenIndex, &ArrayIndexLength, &IsArrayIndexEmpty));
+        TrueOrReturn1(ArrayIndexLength >= 0);
+        if(IsArrayIndexEmpty) {
+            ArrayIndexLength = 1;
+        }
+
+        Var.ArrayLengths[TypeArrayIndexCount + NameArrayIndexCount - 1 - J] = ArrayIndexLength;
+        TotalElementCount *= ArrayIndexLength;
+    }
     
-    TrueOrReturn1(Tokens[I].Type == token_SINGLE && Tokens[I].Start[0] == ';');
+    TrueOrReturn1(I < Tokens.size());
+    uint32_t AssignmentTokenStartIndex = I;
+    if(Tokens[I].Type == token_SINGLE && Tokens[I].Start[0] == '=') {
+        ++I;
+        while(I < Tokens.size() && Tokens[I].Start[0] != ';') {
+            ++I;
+        }
+        uint32_t AssignmentLength = Tokens[I].Start - Tokens[AssignmentTokenStartIndex].Start;
+        uint32_t VariableLength = Tokens[Var.NameTokenIndex].End - Tokens[StartI].Start;
+        printf("WARNING: Shader variable assignment '%.*s' of variable '%.*s' ignored (not implemented).\n", AssignmentLength, Tokens[AssignmentTokenStartIndex].Start, VariableLength, Tokens[StartI].Start);
+    }
+
+    TrueOrReturn1(I < Tokens.size() && Tokens[I].Type == token_SINGLE && Tokens[I].Start[0] == ';');
     ++I;
 
     Var.StartTokenIndex = StartI;
     Var.TokenLength = I - StartI;
+    OutVar = Var;
     *InOutTokenIndex = I;
     return 0;
 }
@@ -469,7 +664,7 @@ static void ParseProgramGlobals(const std::vector<token> &Tokens, parsed_shader 
     uint32_t I = 0;
     if(I < Tokens.size() && Tokens[I].Type == token_PREPROCESSOR && TokenEquals(Tokens[I], "#version")) {
         ++I;
-        if(I < Tokens.size() && Tokens[I].Type == token_NAME) {
+        if(I < Tokens.size() && Tokens[I].Type == token_NUMBER) {
             ++I;
             
             OutParsed.VersionEndTokenIndex = I;
@@ -531,11 +726,6 @@ static void MakeVulkanCompatible(shader_type ShaderType, const std::vector<token
         UniformString += '\n';
 
         UniformNameSet.insert(std::string(Uniforms[I].Name));
-    }
-    for(auto &Var : ParsedShader.GlobalVariables) {
-        if(Var.StorageQualifier == storage_qualifier_UNIFORM) {
-            
-        }
     }
     UniformString += "} Ubo;\n";
 
@@ -812,6 +1002,7 @@ int GlslangProgramLink(glslang_program *Program) {
                 ++MinLocation;
             }
             Uniform.Location = MinLocation;
+            // TODO(blackedout): This is wrong. Need to check each location individually
             MinLocation += Uniform.LocationCount;
         }
 
@@ -899,23 +1090,21 @@ int GlslangProgramGetLog(glslang_program *Program, uint64_t *OutLength, const ch
     return glslang_error_NONE;
 }
 
-int GlslangProgramGetLocation(glslang_program *Program, const char *Name, int *OutLocation) {
-    try {
-        const auto GlslangProgram = (glslang::TProgram *)Program->Native;
-        GlslangProgram->buildReflection();
-        *OutLocation = GlslangProgram->getReflectionIndex(Name);
-    } catch(...) {
-        return glslang_error_EXCEPTION;
-    }
-    return glslang_error_NONE;
-}
-
 void GlslangProgramDelete(glslang_program *Program) {
 
     const auto GlslangProgram = (glslang::TProgram *)Program->Native;
     delete GlslangProgram;
     glslang_program EmptyProgram = {};
     *Program = EmptyProgram;
+}
+
+int ProgramGetUniformLocation(glslang_program *Program, const char *Name, int *OutLocation) {
+    for(const char *It = Name; *It; ++It) {
+
+    }
+
+    *OutLocation = -1;
+    return 0;
 }
 
 int GlslangGetSpirv(glslang_program *Program, glslang_shader *Shader, unsigned char **OutBytes, uint64_t *OutByteCount) {

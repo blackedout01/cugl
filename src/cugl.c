@@ -1701,7 +1701,7 @@ GLint glGetUniformLocation(GLuint program, const GLchar * name) {
         return Result;
     }
 
-    GlslangProgramGetLocation(&Object->Program.GlslangProgram, name, &Result);
+    ProgramGetUniformLocation(&Object->Program.GlslangProgram, name, &Result);
     return Result;
 }
 void glGetUniformSubroutineuiv(GLenum shadertype, GLint location, GLuint * params) {}

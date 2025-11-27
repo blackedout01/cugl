@@ -4,6 +4,7 @@
 
 #include "stdio.h"
 #include "stdlib.h"
+#include "math.h"
 
 void MessageCallbackGL(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *message, const void *userParam) {
     printf("%s\n", message);
@@ -18,7 +19,10 @@ const char SourceV[] =
 
 "layout(location = 0) out vec3 fragColor;\n"
 
-"LOC(1) UNI vec2 offset;\n"
+"uniform vec3[2][4] a[3][5][4];\n"
+"uniform vec3[2] b = vec3[](vec3(vec4(1.0, 1.0, 2.0, 1.0)), mat3(1.0)[1]);\n"
+
+"LOC(- -1) UNI vec2 offset;\n"
 "UNI float zpos;\n"
 
 "void main() {\n"
@@ -176,8 +180,10 @@ int main() {
         glClear(GL_COLOR_BUFFER_BIT);
         
         Position += Velocity*DeltaTime;
-        if(Position < -0.5f || 0.5f < Position) {
-            Velocity *= -1.0f;
+        if(Position < -0.5f) {
+            Velocity = fabsf(Velocity);
+        } else if(0.5f < Position) {
+            Velocity = -fabsf(Velocity);
         }
 
         glUniform2f(1, Position, 0.0f);
